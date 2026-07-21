@@ -3,6 +3,21 @@ fire_event_bridge:
     fire_udp_port: 8889
     reply_port: 8890
 
+fire_link_bridge:
+  ros__parameters:
+    # Aircraft/car communication agreement: telemetry in on 8892, start out on 8893.
+    telemetry_udp_port: 8892
+    drone_ip: 192.168.10.171
+    start_udp_port: 8893
+    start_redundancy: 5
+    start_interval_ms: 5
+    # Optional physical button. Export/configure the GPIO as an input first, then
+    # put its readable value file here (for example /sys/class/gpio/gpioNN/value).
+    # Leave empty when using /drone_start or /drone_start_button instead.
+    button_gpio_value_path: ""
+    button_active_low: true
+    button_debounce_ms: 50
+
 fire_mission_manager:
   ros__parameters:
     # Calibration: arena(0,0) expressed in map coordinates. Measure before running.
@@ -18,12 +33,27 @@ fire_mission_manager:
     safety_margin_dm: 1.5
     # [xmin, ymin, xmax, ymax, ...], arena dm. These are provisional estimates
     # from the contest figure and MUST be measured against the physical field.
-    obstacles_dm: [6.0, 24.0, 18.0, 35.0,
-                   23.0, 25.0, 31.0, 35.0,
-                   37.0, 25.0, 45.0, 35.0,
-                   6.0,  7.0, 15.0, 20.0,
-                   20.0,  7.0, 32.0, 20.0,
-                   37.0,  3.0, 45.0, 20.0]
+    obstacles_dm: &arena_obstacles [6.0, 24.0, 18.0, 35.0,
+                                    23.0, 25.0, 31.0, 35.0,
+                                    37.0, 25.0, 45.0, 35.0,
+                                    6.0,  7.0, 15.0, 20.0,
+                                    20.0,  7.0, 32.0, 20.0,
+                                    37.0,  3.0, 45.0, 20.0]
+
+fire_dashboard:
+  ros__parameters:
+    fullscreen: true
+    headless: false
+    window_width: 1280
+    window_height: 720
+    field_width_dm: 48.0
+    field_height_dm: 40.0
+    home_x_dm: 13.5
+    home_y_dm: 2.5
+    # Alias keeps the display and path planner on exactly the same obstacle data.
+    obstacles_dm: *arena_obstacles
+    history_limit: 20000
+    link_timeout_s: 3.0
 
 laser_gpio_driver:
   ros__parameters:

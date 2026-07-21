@@ -24,6 +24,9 @@ ament_target_dependencies(waypoint_test_publisher
 add_executable(fire_event_bridge src/fire_event_bridge.cpp)
 ament_target_dependencies(fire_event_bridge rclcpp std_msgs)
 
+add_executable(fire_link_bridge src/fire_link_bridge.cpp)
+ament_target_dependencies(fire_link_bridge rclcpp std_msgs)
+
 add_executable(fire_mission_manager src/fire_mission_manager.cpp)
 ament_target_dependencies(fire_mission_manager
   rclcpp std_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
@@ -35,8 +38,13 @@ install(TARGETS
   diff_drive_controller
   waypoint_test_publisher
   fire_event_bridge
+  fire_link_bridge
   fire_mission_manager
   laser_gpio_driver
+  DESTINATION lib/${PROJECT_NAME})
+
+install(PROGRAMS
+  scripts/fire_dashboard.py
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch config

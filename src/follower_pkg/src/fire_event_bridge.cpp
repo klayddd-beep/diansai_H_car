@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -36,10 +37,12 @@ public:
   ~FireEventBridge() override { if (fd_ >= 0) ::close(fd_); }
 private:
   void poll() {
-    Packet p{}; sockaddr_in from{}; socklen_t nfrom = sizeof(from);
-    while (true) { const auto n = ::recvfrom(fd_, &p, sizeof(p), 0, reinterpret_cast<sockaddr*>(&from), &nfrom);
+    std::array<uint8_t, sizeof(Packet) + 1> buffer{}; sockaddr_in from{}; socklen_t nfrom = sizeof(from);
+    while (true) { const auto n = ::recvfrom(fd_, buffer.data(), buffer.size(), 0, reinterpret_cast<sockaddr*>(&from), &nfrom);
       if (n < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) return; return; }
-      if (n != sizeof(p) || p.magic != kMagic || (have_seq_ && static_cast<int16_t>(p.seq-last_seq_) <= 0)) continue;
+      if (n != sizeof(Packet)) continue;
+      Packet p{}; std::memcpy(&p, buffer.data(), sizeof(p));
+      if (p.magic != kMagic || (have_seq_ && static_cast<int16_t>(p.seq-last_seq_) <= 0)) continue;
       last_seq_ = p.seq; have_seq_ = true; sender_ = from.sin_addr; have_sender_ = true;
       std_msgs::msg::Float32MultiArray msg; msg.data = {p.x_dm, p.y_dm, static_cast<float>(p.seq)}; event_pub_->publish(msg);
     }
