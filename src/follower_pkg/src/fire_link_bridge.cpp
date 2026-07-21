@@ -60,8 +60,7 @@ public:
   : Node("fire_link_bridge")
   {
     declare_parameter<int>("telemetry_udp_port", 8892);
-    declare_parameter<std::string>("drone_ip", "");
-    declare_parameter<std::string>("fallback_broadcast_ip", "10.42.0.255");
+    declare_parameter<std::string>("drone_ip", "192.168.10.171");
     declare_parameter<int>("start_udp_port", 8893);
     declare_parameter<int>("start_redundancy", 5);
     declare_parameter<int>("start_interval_ms", 5);
@@ -75,8 +74,6 @@ public:
     start_interval_ms_ =
       std::max(1, static_cast<int>(get_parameter("start_interval_ms").as_int()));
     gpio_path_ = get_parameter("button_gpio_value_path").as_string();
-    drone_ip_ = get_parameter("drone_ip").as_string();
-    fallback_broadcast_ip_ = get_parameter("fallback_broadcast_ip").as_string();
     active_low_ = get_parameter("button_active_low").as_bool();
     debounce_ms_ =
       std::max(0, static_cast<int>(get_parameter("button_debounce_ms").as_int()));
@@ -101,28 +98,12 @@ public:
     }
     ::fcntl(rx_fd_, F_SETFL, ::fcntl(rx_fd_, F_GETFL, 0) | O_NONBLOCK);
 
-    if (!drone_ip_.empty()) {
-      if (::inet_pton(AF_INET, drone_ip_.c_str(), &parameter_destination_) != 1) {
-        throw std::runtime_error("invalid drone_ip: " + drone_ip_);
-      }
-      have_parameter_destination_ = true;
-    }
-    if (!fallback_broadcast_ip_.empty()) {
-      if (::inet_pton(
-          AF_INET, fallback_broadcast_ip_.c_str(), &broadcast_destination_) != 1)
-      {
-        throw std::runtime_error(
-                "invalid fallback_broadcast_ip: " + fallback_broadcast_ip_);
-      }
-      int enable_broadcast = 1;
-      if (::setsockopt(
-          tx_fd_, SOL_SOCKET, SO_BROADCAST, &enable_broadcast,
-          sizeof(enable_broadcast)) < 0)
-      {
-        throw std::runtime_error(
-                "cannot enable UDP broadcast: " + std::string(std::strerror(errno)));
-      }
-      have_broadcast_destination_ = true;
+    destination_ = {};
+    destination_.sin_family = AF_INET;
+    destination_.sin_port = htons(static_cast<uint16_t>(start_port_));
+    const auto drone_ip = get_parameter("drone_ip").as_string();
+    if (::inet_pton(AF_INET, drone_ip.c_str(), &destination_.sin_addr) != 1) {
+      throw std::runtime_error("invalid drone_ip: " + drone_ip);
     }
 
     telemetry_pub_ = create_publisher<std_msgs::msg::Float32MultiArray>("/drone_telemetry", 10);
@@ -146,10 +127,8 @@ public:
       std::chrono::milliseconds(start_interval_ms_), [this]() {send_pending_start();});
 
     RCLCPP_INFO(
-      get_logger(),
-      "listening for aircraft telemetry on UDP :%d; CAR_START resolution: "
-      "learned sender, then drone_ip='%s', then fallback_broadcast_ip='%s'; port %d",
-      telemetry_port_, drone_ip_.c_str(), fallback_broadcast_ip_.c_str(), start_port_);
+      get_logger(), "listening for aircraft telemetry on UDP :%d; start target %s:%d",
+      telemetry_port_, drone_ip.c_str(), start_port_);
     if (gpio_path_.empty()) {
       RCLCPP_INFO(
         get_logger(),
@@ -219,8 +198,6 @@ private:
       }
       last_telemetry_seq_ = packet.seq;
       have_telemetry_seq_ = true;
-      learned_destination_ = sender.sin_addr;
-      have_learned_destination_ = true;
       std_msgs::msg::Float32MultiArray msg;
       msg.layout.dim.resize(1);
       msg.layout.dim[0].label = "x_dm,y_dm,distance_dm,height_dm,phase,seq";
@@ -258,40 +235,9 @@ private:
     if (pending_start_packets_ <= 0) {
       return;
     }
-    sockaddr_in destination{};
-    destination.sin_family = AF_INET;
-    destination.sin_port = htons(static_cast<uint16_t>(start_port_));
-    const char * destination_source = nullptr;
-    if (have_learned_destination_) {
-      destination.sin_addr = learned_destination_;
-      destination_source = "learned";
-    } else if (have_parameter_destination_) {
-      destination.sin_addr = parameter_destination_;
-      destination_source = "param";
-    } else if (have_broadcast_destination_) {
-      destination.sin_addr = broadcast_destination_;
-      destination_source = "broadcast";
-    } else {
-      RCLCPP_ERROR(
-        get_logger(),
-        "cannot send CAR_START: no learned sender, drone_ip, or fallback_broadcast_ip");
-      --pending_start_packets_;
-      return;
-    }
-    char destination_ip[INET_ADDRSTRLEN]{};
-    if (::inet_ntop(
-        AF_INET, &destination.sin_addr, destination_ip, sizeof(destination_ip)) == nullptr)
-    {
-      std::strncpy(destination_ip, "<invalid>", sizeof(destination_ip) - 1);
-    }
-    const int copy_number = redundancy_ - pending_start_packets_ + 1;
-    RCLCPP_INFO(
-      get_logger(), "sending CAR_START seq=%u copy=%d/%d to %s:%d source=%s",
-      start_packet_.seq, copy_number, redundancy_, destination_ip, start_port_,
-      destination_source);
     const auto sent = ::sendto(
       tx_fd_, &start_packet_, sizeof(start_packet_), 0,
-      reinterpret_cast<const sockaddr *>(&destination), sizeof(destination));
+      reinterpret_cast<const sockaddr *>(&destination_), sizeof(destination_));
     if (sent != static_cast<ssize_t>(sizeof(start_packet_))) {
       RCLCPP_ERROR(get_logger(), "failed to send CAR_START packet: %s", std::strerror(errno));
     }
@@ -356,9 +302,6 @@ private:
   int debounce_ms_{50};
   bool active_low_{true};
   bool have_telemetry_seq_{false};
-  bool have_learned_destination_{false};
-  bool have_parameter_destination_{false};
-  bool have_broadcast_destination_{false};
   bool topic_button_pressed_{false};
   bool gpio_initialized_{false};
   bool gpio_candidate_{false};
@@ -367,12 +310,8 @@ private:
   uint16_t start_seq_{0};
   int pending_start_packets_{0};
   std::string gpio_path_;
-  std::string drone_ip_;
-  std::string fallback_broadcast_ip_;
   std::chrono::steady_clock::time_point gpio_candidate_since_{};
-  in_addr learned_destination_{};
-  in_addr parameter_destination_{};
-  in_addr broadcast_destination_{};
+  sockaddr_in destination_{};
   FireLinkPacket start_packet_{};
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr telemetry_pub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr start_sub_;

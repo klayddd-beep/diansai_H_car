@@ -7,11 +7,8 @@ fire_link_bridge:
   ros__parameters:
     # Aircraft/car communication agreement: telemetry in on 8892, start out on 8893.
     telemetry_udp_port: 8892
-    # CAR_START target priority: learned telemetry sender -> drone_ip -> broadcast.
-    # Keep drone_ip empty for DHCP; set it only for debugging or a static DHCP lease.
-    drone_ip: ""
-    # Empty disables the last-resort broadcast fallback.
-    fallback_broadcast_ip: "10.42.0.255"
+    # Fixed-router address of the aircraft. The car uses 192.168.10.113.
+    drone_ip: "192.168.10.171"
     start_udp_port: 8893
     start_redundancy: 5
     start_interval_ms: 5
