@@ -32,22 +32,22 @@
 
 namespace
 {
-  double normalizeAngle(double a)
-  {
-    return std::atan2(std::sin(a), std::cos(a));
-  }
+double normalizeAngle(double a)
+{
+  return std::atan2(std::sin(a), std::cos(a));
+}
 
-  double clamp(double v, double lo, double hi)
-  {
-    return std::max(lo, std::min(hi, v));
-  }
+double clamp(double v, double lo, double hi)
+{
+  return std::max(lo, std::min(hi, v));
+}
 } // namespace
 
 class DiffDriveController : public rclcpp::Node
 {
 public:
   DiffDriveController()
-      : Node("diff_drive_controller")
+  : Node("diff_drive_controller")
   {
     declare_parameter<double>("kp_v", 1.0); // v = kp_v * 距离误差(m)
     declare_parameter<double>("v_max_mps", 0.4);
@@ -82,33 +82,35 @@ public:
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
     target_sub_ = create_subscription<std_msgs::msg::Float32MultiArray>(
-        "/target_position", rclcpp::QoS(10),
-        std::bind(&DiffDriveController::targetCallback, this, std::placeholders::_1));
+      "/target_position", rclcpp::QoS(10),
+      std::bind(&DiffDriveController::targetCallback, this, std::placeholders::_1));
 
     cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", rclcpp::QoS(10));
 
     const double period_sec = 1.0 / std::max(rate_hz, 1.0);
     control_timer_ = create_wall_timer(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(period_sec)),
-        std::bind(&DiffDriveController::controlTimerCallback, this));
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(
+          period_sec)),
+      std::bind(&DiffDriveController::controlTimerCallback, this));
 
-    RCLCPP_INFO(get_logger(),
-                "diff_drive_controller up (kp_v=%.2f v_max=%.2f kp_w=%.2f w_max=%.2f gate=%.0fdeg)",
-                kp_v_, v_max_, kp_w_, w_max_, align_gate_rad_ * 180.0 / M_PI);
+    RCLCPP_INFO(
+      get_logger(),
+      "diff_drive_controller up (kp_v=%.2f v_max=%.2f kp_w=%.2f w_max=%.2f gate=%.0fdeg)",
+      kp_v_, v_max_, kp_w_, w_max_, align_gate_rad_ * 180.0 / M_PI);
   }
 
 private:
   void targetCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg)
   {
-    if (msg->data.size() < 4)
-    {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                           "target_position requires 4 floats [x_cm, y_cm, z_cm, yaw_deg]");
+    if (msg->data.size() < 4) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "target_position requires 4 floats [x_cm, y_cm, z_cm, yaw_deg]");
       return;
     }
 
-    if (msg->data[2] < 0.0f)
-    {
+    if (msg->data[2] < 0.0f) {
       reverse_distance_m_ = static_cast<double>(msg->data[0]) / 100.0;
       reverse_cmd_time_ = now();
       reverse_active_ = true;
@@ -126,10 +128,9 @@ private:
     reverse_active_ = false;
   }
 
-  bool getCurrentPose(double &x, double &y, double &yaw)
+  bool getCurrentPose(double & x, double & y, double & yaw)
   {
-    try
-    {
+    try {
       const auto tf = tf_buffer_->lookupTransform("map", "laser_link", tf2::TimePointZero);
       x = tf.transform.translation.x;
       y = tf.transform.translation.y;
@@ -143,11 +144,10 @@ private:
       x += ctrl_offset_x_m_ * std::cos(yaw) - ctrl_offset_y_m_ * std::sin(yaw);
       y += ctrl_offset_x_m_ * std::sin(yaw) + ctrl_offset_y_m_ * std::cos(yaw);
       return true;
-    }
-    catch (const tf2::TransformException &ex)
-    {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                           "TF map->laser_link unavailable: %s", ex.what());
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "TF map->laser_link unavailable: %s", ex.what());
       return false;
     }
   }
@@ -162,19 +162,15 @@ private:
 
   void controlTimerCallback()
   {
-    if (reverse_active_)
-    {
+    if (reverse_active_) {
       const double age_s = (now() - reverse_cmd_time_).seconds();
-      if (age_s > target_timeout_s_)
-      {
-        if (age_s <= target_timeout_s_ + stop_burst_s_)
-        {
+      if (age_s > target_timeout_s_) {
+        if (age_s <= target_timeout_s_ + stop_burst_s_) {
           publishCmd(0.0, 0.0);
-        }
-        else if (!silenced_)
-        {
+        } else if (!silenced_) {
           silenced_ = true;
-          RCLCPP_WARN(get_logger(), "reverse command stale %.1fs -> stop burst done, going silent", age_s);
+          RCLCPP_WARN(
+            get_logger(), "reverse command stale %.1fs -> stop burst done, going silent", age_s);
         }
         return;
       }
@@ -183,14 +179,12 @@ private:
       double x = 0.0;
       double y = 0.0;
       double yaw = 0.0;
-      if (!getCurrentPose(x, y, yaw))
-      {
+      if (!getCurrentPose(x, y, yaw)) {
         publishCmd(0.0, 0.0);
         return;
       }
 
-      if (!reverse_started_)
-      {
+      if (!reverse_started_) {
         reverse_start_x_ = x;
         reverse_start_y_ = y;
         reverse_start_yaw_ = yaw;
@@ -198,10 +192,9 @@ private:
       }
 
       const double back_m = (reverse_start_x_ - x) * std::cos(reverse_start_yaw_) +
-                            (reverse_start_y_ - y) * std::sin(reverse_start_yaw_);
+        (reverse_start_y_ - y) * std::sin(reverse_start_yaw_);
       const double remaining_m = reverse_distance_m_ - back_m;
-      if (remaining_m <= pos_tol_m_)
-      {
+      if (remaining_m <= pos_tol_m_) {
         publishCmd(0.0, 0.0);
         return;
       }
@@ -209,29 +202,23 @@ private:
       const double yaw_err = normalizeAngle(reverse_start_yaw_ - yaw);
       double v = -clamp(kp_v_ * remaining_m, 0.0, v_max_);
       double w = 0.0;
-      if (std::fabs(yaw_err) <= align_gate_rad_)
-      {
+      if (std::fabs(yaw_err) <= align_gate_rad_) {
         w = clamp(kp_w_ * yaw_err, -w_max_, w_max_);
       }
       publishCmd(v, w);
       return;
     }
 
-    if (!has_target_)
-    {
+    if (!has_target_) {
       return; // 从未收到目标:保持沉默,不抢 /cmd_vel
     }
 
     // 目标超时:零速刹停 stop_burst_s,然后转入沉默,等新目标
     const double age_s = (now() - last_target_time_).seconds();
-    if (age_s > target_timeout_s_)
-    {
-      if (age_s <= target_timeout_s_ + stop_burst_s_)
-      {
+    if (age_s > target_timeout_s_) {
+      if (age_s <= target_timeout_s_ + stop_burst_s_) {
         publishCmd(0.0, 0.0);
-      }
-      else if (!silenced_)
-      {
+      } else if (!silenced_) {
         silenced_ = true;
         RCLCPP_WARN(get_logger(), "target stale %.1fs -> stop burst done, going silent", age_s);
       }
@@ -240,8 +227,7 @@ private:
     silenced_ = false;
 
     double x, y, yaw;
-    if (!getCurrentPose(x, y, yaw))
-    {
+    if (!getCurrentPose(x, y, yaw)) {
       publishCmd(0.0, 0.0); // 有目标但无定位:宁可停车
       return;
     }
@@ -253,22 +239,17 @@ private:
     double v = 0.0;
     double w = 0.0;
 
-    if (d > pos_tol_m_)
-    {
+    if (d > pos_tol_m_) {
       // 追位置:先对准目标点方位,再前进
       const double e_h = normalizeAngle(std::atan2(dy, dx) - yaw);
       w = clamp(kp_w_ * e_h, -w_max_, w_max_);
-      if (std::fabs(e_h) <= align_gate_rad_)
-      {
+      if (std::fabs(e_h) <= align_gate_rad_) {
         v = clamp(kp_v_ * d, 0.0, v_max_) * std::cos(e_h);
       }
-    }
-    else
-    {
+    } else {
       // 位置到了:原地对准目标 yaw
       const double e_yaw = normalizeAngle(target_yaw_rad_ - yaw);
-      if (std::fabs(e_yaw) > yaw_tol_rad_)
-      {
+      if (std::fabs(e_yaw) > yaw_tol_rad_) {
         w = clamp(kp_w_ * e_yaw, -w_max_, w_max_);
       }
     }
@@ -301,7 +282,7 @@ private:
   rclcpp::TimerBase::SharedPtr control_timer_;
 };
 
-int main(int argc, char **argv)
+int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<DiffDriveController>());

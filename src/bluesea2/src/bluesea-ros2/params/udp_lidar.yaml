@@ -27,7 +27,7 @@ bluesea_node:
     log_path: "/tmp/ros2_log.txt"
   #CONNECT#
     type: "udp"
-    lidar_ip: "192.168.10.7"     # 雷达 IP
+    lidar_ip: "192.168.20.7"     # 独立有线雷达网段示例
     lidar_port: 2112             # 雷达 UDP 源端口（不用改）
     local_port: 6668             # ← 本机监听端口，要和上位机里设置的一致
     group_ip: "255.255.255.255"  # 广播模式，没问题
@@ -43,7 +43,7 @@ bluesea_node:
     direction:  -1
     ats: -1
   #NTP
-    ntp_ip: "192.168.10.1"
+    ntp_ip: "192.168.20.1"
     ntp_port: 5678
     ntp_enable: -1
     

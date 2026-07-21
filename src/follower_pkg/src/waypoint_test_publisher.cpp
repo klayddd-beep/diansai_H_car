@@ -73,7 +73,8 @@ public:
 
     const auto flat = get_parameter("waypoints").as_double_array();
     if (flat.size() < 3 || flat.size() % 3 != 0) {
-      RCLCPP_FATAL(get_logger(),
+      RCLCPP_FATAL(
+        get_logger(),
         "waypoints 必须是 3 的倍数 [x_cm,y_cm,yaw_deg,...],当前 %zu 个数", flat.size());
       throw std::runtime_error("invalid waypoints parameter");
     }
@@ -94,7 +95,8 @@ public:
         std::chrono::duration<double>(period_sec)),
       std::bind(&WaypointTestPublisher::timerCallback, this));
 
-    RCLCPP_INFO(get_logger(),
+    RCLCPP_INFO(
+      get_logger(),
       "waypoint_test_publisher up: %zu 个航点, loop=%s, start_delay=%.1fs, "
       "tol(pos=%.0fcm yaw=%.0fdeg)",
       waypoints_.size(), loop_ ? "true" : "false", start_delay_s_,
@@ -117,7 +119,8 @@ private:
       yaw_deg = yaw * 180.0 / M_PI;
       return true;
     } catch (const tf2::TransformException & ex) {
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
         "TF %s->%s unavailable: %s",
         map_frame_.c_str(), laser_link_frame_.c_str(), ex.what());
       return false;
@@ -169,7 +172,8 @@ private:
     }
 
     if (isReached(wp, x_cm, y_cm, yaw_deg)) {
-      RCLCPP_INFO(get_logger(),
+      RCLCPP_INFO(
+        get_logger(),
         "到达航点 %zu (x=%.0f y=%.0f yaw=%.0f)",
         current_idx_, wp.x_cm, wp.y_cm, wp.yaw_deg);
       current_idx_++;

@@ -2,7 +2,9 @@
 #include <algorithm>
 #include <cmath>
 #include <queue>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
@@ -14,29 +16,444 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
-struct P { double x, y; };
-class FireMissionManager : public rclcpp::Node {
-public:
-  FireMissionManager() : Node("fire_mission_manager") {
-    declare_parameter<double>("arena_origin_map_x_m", 0.0); declare_parameter<double>("arena_origin_map_y_m", 0.0); declare_parameter<double>("arena_origin_map_yaw_deg", 0.0);
-    declare_parameter<double>("home_x_dm", 13.5); declare_parameter<double>("home_y_dm", 2.5); declare_parameter<double>("standoff_dm", 4.0); declare_parameter<double>("arrival_tol_dm", 1.2); declare_parameter<double>("laser_on_s", 2.1); declare_parameter<double>("grid_dm", 1.0); declare_parameter<double>("safety_margin_dm", 1.5);
-    declare_parameter<std::vector<double>>("obstacles_dm", std::vector<double>{});
-    ox_=get_parameter("arena_origin_map_x_m").as_double(); oy_=get_parameter("arena_origin_map_y_m").as_double(); yaw0_=get_parameter("arena_origin_map_yaw_deg").as_double()*M_PI/180.; home_={get_parameter("home_x_dm").as_double(),get_parameter("home_y_dm").as_double()}; standoff_=get_parameter("standoff_dm").as_double(); tol_=get_parameter("arrival_tol_dm").as_double(); laser_s_=get_parameter("laser_on_s").as_double(); grid_=get_parameter("grid_dm").as_double(); margin_=get_parameter("safety_margin_dm").as_double(); obs_=get_parameter("obstacles_dm").as_double_array();
-    tfbuf_=std::make_shared<tf2_ros::Buffer>(get_clock()); tfl_=std::make_shared<tf2_ros::TransformListener>(*tfbuf_);
-    target_=create_publisher<std_msgs::msg::Float32MultiArray>("/target_position",10); laser_=create_publisher<std_msgs::msg::String>("/laser_command",10); status_=create_publisher<std_msgs::msg::String>("/fire_mission_status",10);
-    fire_=create_subscription<std_msgs::msg::Float32MultiArray>("/fire_event",10,[this](std_msgs::msg::Float32MultiArray::SharedPtr m){ onFire(*m); });
-    laser_status_=create_subscription<std_msgs::msg::String>("/laser_status",10,[this](std_msgs::msg::String::SharedPtr m){ laser_state_=m->data; });
-    timer_=create_wall_timer(std::chrono::milliseconds(100),[this](){ tick(); }); report("ready");
-  }
-private:
-  enum class S {IDLE, DRIVE_FIRE, LASER_ON, DRIVE_HOME, SAFE_STOP}; S state_{S::IDLE};
-  bool pose(P &p, double &yaw) { try { auto t=tfbuf_->lookupTransform("map","laser_link",tf2::TimePointZero); tf2::Quaternion q; tf2::fromMsg(t.transform.rotation,q); double r,pi; tf2::Matrix3x3(q).getRPY(r,pi,yaw); const double dx=t.transform.translation.x-ox_,dy=t.transform.translation.y-oy_, c=std::cos(yaw0_),s=std::sin(yaw0_); p.x=(c*dx+s*dy)*10.; p.y=(-s*dx+c*dy)*10.; return true;} catch(const tf2::TransformException &e){RCLCPP_WARN_THROTTLE(get_logger(),*get_clock(),2000,"TF unavailable: %s",e.what());return false;} }
-  bool blocked(double x,double y) const { if(x<0||x>48||y<0||y>40) return true; for(size_t i=0;i+3<obs_.size();i+=4) if(x>=obs_[i]-margin_&&x<=obs_[i+2]+margin_&&y>=obs_[i+1]-margin_&&y<=obs_[i+3]+margin_) return true; return false; }
-  std::vector<P> plan(P a,P b) const { const int nx=int(48/grid_)+1, ny=int(40/grid_)+1; auto idx=[nx](int x,int y){return y*nx+x;}; auto cell=[this](P p){return std::pair<int,int>{int(std::round(p.x/grid_)),int(std::round(p.y/grid_))};}; const auto start=cell(a), goal=cell(b); const int sx=start.first,sy=start.second,gx=goal.first,gy=goal.second; if(sx<0||sx>=nx||sy<0||sy>=ny||gx<0||gx>=nx||gy<0||gy>=ny||blocked(b.x,b.y)) return {}; std::vector<int> prev(nx*ny,-1); std::queue<int> q; q.push(idx(sx,sy)); prev[idx(sx,sy)]=idx(sx,sy); const int dx[4]={1,-1,0,0},dy[4]={0,0,1,-1}; while(!q.empty()){int u=q.front();q.pop();int x=u%nx,y=u/nx;if(x==gx&&y==gy)break;for(int k=0;k<4;k++){int X=x+dx[k],Y=y+dy[k];if(X>=0&&X<nx&&Y>=0&&Y<ny&&prev[idx(X,Y)]<0&&!blocked(X*grid_,Y*grid_)){prev[idx(X,Y)]=u;q.push(idx(X,Y));}}} if(prev[idx(gx,gy)]<0)return{}; std::vector<P> out; for(int u=idx(gx,gy);u!=idx(sx,sy);u=prev[u])out.push_back({(u%nx)*grid_,(u/nx)*grid_});out.push_back(a);std::reverse(out.begin(),out.end());out.back()=b; return out; }
-  void onFire(const std_msgs::msg::Float32MultiArray&m) { if(m.data.size()<2)return; if(state_!=S::IDLE){report(current_status_);return;} firep_={m.data[0],m.data[1]}; P cur;double y;if(!pose(cur,y)){fail("tf_lost");return;} std::vector<P> candidates={{firep_.x-standoff_,firep_.y},{firep_.x+standoff_,firep_.y},{firep_.x,firep_.y-standoff_},{firep_.x,firep_.y+standoff_}}; for(auto c:candidates){auto p=plan(cur,c);if(!p.empty()){path_=p;wp_=0;state_=S::DRIVE_FIRE;report("enroute");return;}} fail("unreachable"); }
-  void send(P p, double yaw) { const double c=std::cos(yaw0_),s=std::sin(yaw0_); double xm=ox_+(c*p.x-s*p.y)/10.,ym=oy_+(s*p.x+c*p.y)/10.; std_msgs::msg::Float32MultiArray m;m.data={float(xm*100),float(ym*100),0.f,float(yaw*180/M_PI)};target_->publish(m); }
-  void tick() { if(state_==S::IDLE||state_==S::SAFE_STOP)return; P cur;double yaw;if(!pose(cur,yaw)){fail("tf_lost");return;} if(state_==S::LASER_ON){if(laser_state_=="timeout_off"){fail("laser_timeout");return;} if((now()-laser_start_).seconds()>=laser_s_){std_msgs::msg::String m;m.data="OFF";laser_->publish(m);path_=plan(cur,home_);if(path_.empty()){fail("home_unreachable");return;}wp_=0;state_=S::DRIVE_HOME;report("returning");}return;} if(wp_>=path_.size()){if(state_==S::DRIVE_FIRE){laser_state_.clear();std_msgs::msg::String m;m.data="ON";laser_->publish(m);laser_start_=now();state_=S::LASER_ON;report("extinguishing");}else{state_=S::IDLE;report("done");}return;} P target=path_[wp_]; if(std::hypot(cur.x-target.x,cur.y-target.y)<tol_){wp_++;return;} double desired=std::atan2(target.y-cur.y,target.x-cur.x)+yaw0_;send(target,desired); }
-  void fail(const std::string&s){state_=S::SAFE_STOP; P p;double y;if(pose(p,y))send(p,y);report("failed:"+s);} void report(const std::string&s){current_status_=s;std_msgs::msg::String m;m.data=s;status_->publish(m);}
-  double ox_,oy_,yaw0_,standoff_,tol_,laser_s_,grid_,margin_;P home_,firep_;std::vector<double>obs_;std::vector<P>path_;size_t wp_{0};std::string laser_state_,current_status_{"ready"};rclcpp::Time laser_start_;std::shared_ptr<tf2_ros::Buffer>tfbuf_;std::shared_ptr<tf2_ros::TransformListener>tfl_;rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr target_;rclcpp::Publisher<std_msgs::msg::String>::SharedPtr laser_,status_;rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr fire_;rclcpp::Subscription<std_msgs::msg::String>::SharedPtr laser_status_;rclcpp::TimerBase::SharedPtr timer_;
+namespace
+{
+constexpr double kArenaWidthDm = 48.0;
+constexpr double kArenaHeightDm = 40.0;
+
+struct Point
+{
+  double x;
+  double y;
 };
-int main(int argc,char**argv){rclcpp::init(argc,argv);rclcpp::spin(std::make_shared<FireMissionManager>());rclcpp::shutdown();}
+
+double normalize_angle(double angle)
+{
+  return std::atan2(std::sin(angle), std::cos(angle));
+}
+}  // namespace
+
+class FireMissionManager : public rclcpp::Node
+{
+public:
+  FireMissionManager()
+  : Node("fire_mission_manager")
+  {
+    declare_parameter<double>("arena_origin_map_x_m", 0.0);
+    declare_parameter<double>("arena_origin_map_y_m", 0.0);
+    declare_parameter<double>("arena_origin_map_yaw_deg", 0.0);
+    declare_parameter<double>("home_x_dm", 13.5);
+    declare_parameter<double>("home_y_dm", 2.5);
+    declare_parameter<double>("standoff_dm", 4.0);
+    declare_parameter<double>("arrival_tol_dm", 1.2);
+    declare_parameter<double>("aim_tol_deg", 8.0);
+    declare_parameter<double>("laser_on_s", 2.1);
+    declare_parameter<double>("grid_dm", 1.0);
+    declare_parameter<double>("safety_margin_dm", 1.5);
+    declare_parameter<std::vector<double>>(
+      "obstacles_dm", std::vector<double>{});
+
+    origin_x_m_ = get_parameter("arena_origin_map_x_m").as_double();
+    origin_y_m_ = get_parameter("arena_origin_map_y_m").as_double();
+    origin_yaw_rad_ =
+      get_parameter("arena_origin_map_yaw_deg").as_double() * M_PI / 180.0;
+    home_ = {
+      get_parameter("home_x_dm").as_double(),
+      get_parameter("home_y_dm").as_double()};
+    standoff_dm_ = get_parameter("standoff_dm").as_double();
+    arrival_tol_dm_ = get_parameter("arrival_tol_dm").as_double();
+    aim_tol_rad_ = get_parameter("aim_tol_deg").as_double() * M_PI / 180.0;
+    laser_on_s_ = get_parameter("laser_on_s").as_double();
+    grid_dm_ = get_parameter("grid_dm").as_double();
+    safety_margin_dm_ = get_parameter("safety_margin_dm").as_double();
+    obstacles_ = get_parameter("obstacles_dm").as_double_array();
+    validate_parameters();
+
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
+    tf_listener_ =
+      std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+    target_publisher_ =
+      create_publisher<std_msgs::msg::Float32MultiArray>(
+      "/target_position", 10);
+    laser_publisher_ =
+      create_publisher<std_msgs::msg::String>("/laser_command", 10);
+    status_publisher_ =
+      create_publisher<std_msgs::msg::String>("/fire_mission_status", 10);
+    fire_subscription_ =
+      create_subscription<std_msgs::msg::Float32MultiArray>(
+      "/fire_event", 10,
+      [this](std_msgs::msg::Float32MultiArray::SharedPtr message) {
+        on_fire(*message);
+      });
+    laser_status_subscription_ =
+      create_subscription<std_msgs::msg::String>(
+      "/laser_status", 10,
+      [this](std_msgs::msg::String::SharedPtr message) {
+        laser_state_ = message->data;
+      });
+    timer_ = create_wall_timer(
+      std::chrono::milliseconds(100), [this]() {tick();});
+    report("ready");
+  }
+
+private:
+  enum class State {IDLE, DRIVE_FIRE, LASER_ON, DRIVE_HOME, SAFE_STOP};
+
+  void validate_parameters() const
+  {
+    if (!std::isfinite(origin_x_m_) || !std::isfinite(origin_y_m_) ||
+      !std::isfinite(origin_yaw_rad_))
+    {
+      throw std::invalid_argument("arena origin parameters must be finite");
+    }
+    if (!inside_arena(home_)) {
+      throw std::invalid_argument("home position must be inside the arena");
+    }
+    if (!std::isfinite(standoff_dm_) || standoff_dm_ <= 0.0 ||
+      !std::isfinite(arrival_tol_dm_) || arrival_tol_dm_ <= 0.0 ||
+      !std::isfinite(aim_tol_rad_) || aim_tol_rad_ <= 0.0 ||
+      !std::isfinite(laser_on_s_) || laser_on_s_ <= 0.0 ||
+      !std::isfinite(grid_dm_) || grid_dm_ <= 0.0 ||
+      !std::isfinite(safety_margin_dm_) || safety_margin_dm_ < 0.0)
+    {
+      throw std::invalid_argument("mission distances and durations are invalid");
+    }
+    if (obstacles_.size() % 4 != 0 ||
+      !std::all_of(
+        obstacles_.begin(), obstacles_.end(),
+        [](double value) {return std::isfinite(value);}))
+    {
+      throw std::invalid_argument(
+              "obstacles_dm must contain finite xmin,ymin,xmax,ymax groups");
+    }
+    for (size_t index = 0; index < obstacles_.size(); index += 4) {
+      if (obstacles_[index] >= obstacles_[index + 2] ||
+        obstacles_[index + 1] >= obstacles_[index + 3])
+      {
+        throw std::invalid_argument(
+                "each obstacle must satisfy xmin<xmax and ymin<ymax");
+      }
+    }
+  }
+
+  static bool inside_arena(const Point & point)
+  {
+    return std::isfinite(point.x) && std::isfinite(point.y) &&
+           point.x >= 0.0 && point.x <= kArenaWidthDm &&
+           point.y >= 0.0 && point.y <= kArenaHeightDm;
+  }
+
+  bool get_pose(Point & point, double & yaw_map)
+  {
+    try {
+      const auto transform = tf_buffer_->lookupTransform(
+        "map", "laser_link", tf2::TimePointZero);
+      tf2::Quaternion quaternion;
+      tf2::fromMsg(transform.transform.rotation, quaternion);
+      double roll = 0.0;
+      double pitch = 0.0;
+      tf2::Matrix3x3(quaternion).getRPY(roll, pitch, yaw_map);
+
+      const double dx = transform.transform.translation.x - origin_x_m_;
+      const double dy = transform.transform.translation.y - origin_y_m_;
+      const double cosine = std::cos(origin_yaw_rad_);
+      const double sine = std::sin(origin_yaw_rad_);
+      point.x = (cosine * dx + sine * dy) * 10.0;
+      point.y = (-sine * dx + cosine * dy) * 10.0;
+      return inside_arena(point) && std::isfinite(yaw_map);
+    } catch (const tf2::TransformException & error) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "TF unavailable: %s", error.what());
+      return false;
+    }
+  }
+
+  bool blocked(double x, double y) const
+  {
+    if (x < 0.0 || x > kArenaWidthDm || y < 0.0 || y > kArenaHeightDm) {
+      return true;
+    }
+    for (size_t index = 0; index + 3 < obstacles_.size(); index += 4) {
+      if (x >= obstacles_[index] - safety_margin_dm_ &&
+        x <= obstacles_[index + 2] + safety_margin_dm_ &&
+        y >= obstacles_[index + 1] - safety_margin_dm_ &&
+        y <= obstacles_[index + 3] + safety_margin_dm_)
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  std::vector<Point> plan(Point start, Point goal) const
+  {
+    const int columns = static_cast<int>(kArenaWidthDm / grid_dm_) + 1;
+    const int rows = static_cast<int>(kArenaHeightDm / grid_dm_) + 1;
+    const auto cell_index = [columns](int x, int y) {
+        return y * columns + x;
+      };
+    const auto to_cell = [this](Point point) {
+        return std::pair<int, int>{
+        static_cast<int>(std::round(point.x / grid_dm_)),
+        static_cast<int>(std::round(point.y / grid_dm_))};
+      };
+    const auto start_cell = to_cell(start);
+    const auto goal_cell = to_cell(goal);
+    const int start_x = start_cell.first;
+    const int start_y = start_cell.second;
+    const int goal_x = goal_cell.first;
+    const int goal_y = goal_cell.second;
+    if (start_x < 0 || start_x >= columns || start_y < 0 || start_y >= rows ||
+      goal_x < 0 || goal_x >= columns || goal_y < 0 || goal_y >= rows ||
+      blocked(goal.x, goal.y))
+    {
+      return {};
+    }
+
+    std::vector<int> previous(columns * rows, -1);
+    std::queue<int> pending;
+    pending.push(cell_index(start_x, start_y));
+    previous[cell_index(start_x, start_y)] = cell_index(start_x, start_y);
+    constexpr int delta_x[4] = {1, -1, 0, 0};
+    constexpr int delta_y[4] = {0, 0, 1, -1};
+    while (!pending.empty()) {
+      const int current = pending.front();
+      pending.pop();
+      const int x = current % columns;
+      const int y = current / columns;
+      if (x == goal_x && y == goal_y) {
+        break;
+      }
+      for (int direction = 0; direction < 4; ++direction) {
+        const int next_x = x + delta_x[direction];
+        const int next_y = y + delta_y[direction];
+        if (next_x >= 0 && next_x < columns &&
+          next_y >= 0 && next_y < rows &&
+          previous[cell_index(next_x, next_y)] < 0 &&
+          !blocked(next_x * grid_dm_, next_y * grid_dm_))
+        {
+          previous[cell_index(next_x, next_y)] = current;
+          pending.push(cell_index(next_x, next_y));
+        }
+      }
+    }
+    if (previous[cell_index(goal_x, goal_y)] < 0) {
+      return {};
+    }
+
+    std::vector<Point> result;
+    for (int current = cell_index(goal_x, goal_y);
+      current != cell_index(start_x, start_y); current = previous[current])
+    {
+      result.push_back(
+      {
+        (current % columns) * grid_dm_,
+        (current / columns) * grid_dm_});
+    }
+    result.push_back(start);
+    std::reverse(result.begin(), result.end());
+    result.back() = goal;
+    return result;
+  }
+
+  void on_fire(const std_msgs::msg::Float32MultiArray & message)
+  {
+    if (message.data.size() < 2) {
+      RCLCPP_WARN(get_logger(), "ignoring short /fire_event message");
+      return;
+    }
+    if (state_ != State::IDLE) {
+      report(current_status_);
+      return;
+    }
+    const Point requested_fire{message.data[0], message.data[1]};
+    if (!inside_arena(requested_fire)) {
+      RCLCPP_WARN(get_logger(), "ignoring fire point outside the arena");
+      report("failed:invalid_fire");
+      return;
+    }
+
+    Point current{};
+    double yaw = 0.0;
+    if (!get_pose(current, yaw)) {
+      fail("tf_lost");
+      return;
+    }
+    fire_point_ = requested_fire;
+    const std::vector<Point> candidates = {
+      {fire_point_.x - standoff_dm_, fire_point_.y},
+      {fire_point_.x + standoff_dm_, fire_point_.y},
+      {fire_point_.x, fire_point_.y - standoff_dm_},
+      {fire_point_.x, fire_point_.y + standoff_dm_}};
+    path_.clear();
+    for (const auto & candidate : candidates) {
+      const auto candidate_path = plan(current, candidate);
+      if (!candidate_path.empty() &&
+        (path_.empty() || candidate_path.size() < path_.size()))
+      {
+        path_ = candidate_path;
+      }
+    }
+    if (path_.empty()) {
+      fail("unreachable");
+      return;
+    }
+    waypoint_index_ = 0;
+    state_ = State::DRIVE_FIRE;
+    report("enroute");
+  }
+
+  void publish_target(Point point, double yaw_map)
+  {
+    const double cosine = std::cos(origin_yaw_rad_);
+    const double sine = std::sin(origin_yaw_rad_);
+    const double map_x =
+      origin_x_m_ + (cosine * point.x - sine * point.y) / 10.0;
+    const double map_y =
+      origin_y_m_ + (sine * point.x + cosine * point.y) / 10.0;
+    std_msgs::msg::Float32MultiArray message;
+    message.data = {
+      static_cast<float>(map_x * 100.0),
+      static_cast<float>(map_y * 100.0),
+      0.0F,
+      static_cast<float>(yaw_map * 180.0 / M_PI)};
+    target_publisher_->publish(message);
+  }
+
+  void publish_laser(const char * command)
+  {
+    std_msgs::msg::String message;
+    message.data = command;
+    laser_publisher_->publish(message);
+  }
+
+  void tick()
+  {
+    if (state_ == State::IDLE || state_ == State::SAFE_STOP) {
+      return;
+    }
+
+    Point current{};
+    double yaw_map = 0.0;
+    if (!get_pose(current, yaw_map)) {
+      fail("tf_lost");
+      return;
+    }
+    if (state_ == State::LASER_ON) {
+      if (laser_state_ == "timeout_off") {
+        fail("laser_timeout");
+        return;
+      }
+      if ((now() - laser_started_at_).seconds() >= laser_on_s_) {
+        publish_laser("OFF");
+        path_ = plan(current, home_);
+        if (path_.empty()) {
+          fail("home_unreachable");
+          return;
+        }
+        waypoint_index_ = 0;
+        state_ = State::DRIVE_HOME;
+        report("returning");
+      }
+      return;
+    }
+    if (waypoint_index_ >= path_.size()) {
+      if (state_ == State::DRIVE_FIRE) {
+        laser_state_.clear();
+        publish_laser("ON");
+        laser_started_at_ = now();
+        state_ = State::LASER_ON;
+        report("extinguishing");
+      } else {
+        state_ = State::IDLE;
+        report("done");
+      }
+      return;
+    }
+
+    const Point target = path_[waypoint_index_];
+    const double distance = std::hypot(current.x - target.x, current.y - target.y);
+    const bool final_fire_waypoint =
+      state_ == State::DRIVE_FIRE && waypoint_index_ + 1 == path_.size();
+    if (final_fire_waypoint) {
+      const double aim_yaw_map =
+        std::atan2(
+        fire_point_.y - current.y, fire_point_.x - current.x) +
+        origin_yaw_rad_;
+      publish_target(target, aim_yaw_map);
+      if (distance < arrival_tol_dm_ &&
+        std::fabs(normalize_angle(aim_yaw_map - yaw_map)) <= aim_tol_rad_)
+      {
+        ++waypoint_index_;
+      }
+      return;
+    }
+    if (distance < arrival_tol_dm_) {
+      ++waypoint_index_;
+      return;
+    }
+    const double desired_yaw_map =
+      std::atan2(target.y - current.y, target.x - current.x) + origin_yaw_rad_;
+    publish_target(target, desired_yaw_map);
+  }
+
+  void fail(const std::string & reason)
+  {
+    // OFF is harmless in mock mode and is mandatory once a real driver is used.
+    publish_laser("OFF");
+    state_ = State::SAFE_STOP;
+    Point current{};
+    double yaw = 0.0;
+    if (get_pose(current, yaw)) {
+      publish_target(current, yaw);
+    }
+    report("failed:" + reason);
+  }
+
+  void report(const std::string & status)
+  {
+    current_status_ = status;
+    std_msgs::msg::String message;
+    message.data = status;
+    status_publisher_->publish(message);
+  }
+
+  State state_{State::IDLE};
+  double origin_x_m_{0.0};
+  double origin_y_m_{0.0};
+  double origin_yaw_rad_{0.0};
+  double standoff_dm_{4.0};
+  double arrival_tol_dm_{1.2};
+  double aim_tol_rad_{8.0 * M_PI / 180.0};
+  double laser_on_s_{2.1};
+  double grid_dm_{1.0};
+  double safety_margin_dm_{1.5};
+  Point home_{};
+  Point fire_point_{};
+  std::vector<double> obstacles_;
+  std::vector<Point> path_;
+  size_t waypoint_index_{0};
+  std::string laser_state_;
+  std::string current_status_{"ready"};
+  rclcpp::Time laser_started_at_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr
+    target_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr laser_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_publisher_;
+  rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr
+    fire_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
+    laser_status_subscription_;
+  rclcpp::TimerBase::SharedPtr timer_;
+};
+
+int main(int argc, char ** argv)
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<FireMissionManager>());
+  rclcpp::shutdown();
+  return 0;
+}

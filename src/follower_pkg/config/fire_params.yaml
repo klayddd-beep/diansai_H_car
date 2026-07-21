@@ -7,7 +7,11 @@ fire_link_bridge:
   ros__parameters:
     # Aircraft/car communication agreement: telemetry in on 8892, start out on 8893.
     telemetry_udp_port: 8892
-    drone_ip: 192.168.10.171
+    # CAR_START target priority: learned telemetry sender -> drone_ip -> broadcast.
+    # Keep drone_ip empty for DHCP; set it only for debugging or a static DHCP lease.
+    drone_ip: ""
+    # Empty disables the last-resort broadcast fallback.
+    fallback_broadcast_ip: "10.42.0.255"
     start_udp_port: 8893
     start_redundancy: 5
     start_interval_ms: 5
@@ -28,17 +32,19 @@ fire_mission_manager:
     home_y_dm: 2.5
     standoff_dm: 4.0
     arrival_tol_dm: 1.2
+    # The car must face the fire within this tolerance before the laser starts.
+    aim_tol_deg: 8.0
     laser_on_s: 2.1
     grid_dm: 1.0
     safety_margin_dm: 1.5
     # [xmin, ymin, xmax, ymax, ...], arena dm. These are provisional estimates
     # from the contest figure and MUST be measured against the physical field.
-    obstacles_dm: &arena_obstacles [6.0, 24.0, 18.0, 35.0,
-                                    23.0, 25.0, 31.0, 35.0,
-                                    37.0, 25.0, 45.0, 35.0,
-                                    6.0,  7.0, 15.0, 20.0,
-                                    20.0,  7.0, 32.0, 20.0,
-                                    37.0,  3.0, 45.0, 20.0]
+    obstacles_dm: [6.0, 24.0, 18.0, 35.0,
+                   23.0, 25.0, 31.0, 35.0,
+                   37.0, 25.0, 45.0, 35.0,
+                   6.0,  7.0, 15.0, 20.0,
+                   20.0,  7.0, 32.0, 20.0,
+                   37.0,  3.0, 45.0, 20.0]
 
 fire_dashboard:
   ros__parameters:
@@ -50,8 +56,14 @@ fire_dashboard:
     field_height_dm: 40.0
     home_x_dm: 13.5
     home_y_dm: 2.5
-    # Alias keeps the display and path planner on exactly the same obstacle data.
-    obstacles_dm: *arena_obstacles
+    # Must remain identical to fire_mission_manager.obstacles_dm. ROS 2 Humble's
+    # parameter parser does not support YAML aliases, so the array is explicit.
+    obstacles_dm: [6.0, 24.0, 18.0, 35.0,
+                   23.0, 25.0, 31.0, 35.0,
+                   37.0, 25.0, 45.0, 35.0,
+                   6.0,  7.0, 15.0, 20.0,
+                   20.0,  7.0, 32.0, 20.0,
+                   37.0,  3.0, 45.0, 20.0]
     history_limit: 20000
     link_timeout_s: 3.0
 

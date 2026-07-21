@@ -1,6 +1,6 @@
 # 空地协同智能消防车（车端）
 
-本仓库是 2023 年全国大学生电子设计竞赛 G 题“空地协同智能消防系统”的消防车端 ROS 2 工作空间。车端通过 UDP 与无人机交换启动命令、遥测、火源坐标和任务状态，使用激光雷达与 Cartographer 定位，规划绕开街区的消防路线，控制差速底盘到达照射位置并返回出发区。
+本仓库是 2023 年全国大学生电子设计竞赛 G 题“空地协同智能消防系统”的消防车端 ROS 2 工作空间，目标板为 Orange Pi 5 Max（Ubuntu 22.04 / aarch64）。车端通过 UDP 与无人机交换启动命令、遥测、火源坐标和任务状态，使用激光雷达与 Cartographer 定位，规划绕开街区的消防路线，控制差速底盘到达照射位置并返回出发区。
 
 当前代码已经补齐《G题_机车通信接口约定》要求的车端通信与显示功能，并在 ROS 2 Humble 环境完成构建和本机 UDP 闭环验证。场地标定、真实激光 GPIO、实车行驶和双机联调仍需在比赛硬件上完成。
 
@@ -11,8 +11,8 @@
 - 新增 `fire_link_bridge`：
   - 监听 UDP `8892`，接收无人机 32 字节遥测包。
   - 校验定长、`0xF14E` magic、消息类型和 16 位循环序号。
-  - 丢弃重复包、乱序旧包、错误类型以及过长/过短数据包。
-  - 发布 `/drone_telemetry`，包含位置、里程、高度、阶段、序号和发送时间戳。
+  - 丢弃重复包、乱序旧包、错误类型、异常浮点数以及过长/过短数据包。
+  - 发布 `/drone_telemetry`，包含位置、里程、高度、阶段和序号。
   - 通过 `/drone_start`、`/drone_start_button` 或物理 GPIO 按键触发启动。
   - 向无人机 UDP `8893` 连发 5 个相同序号的 `CAR_START` 包。
 - 新增 `fire_dashboard.py` 车载全屏显示：
@@ -20,8 +20,11 @@
   - 按 48 dm × 40 dm 比例绘制场地、六个街区、起降区和消防车出发点。
   - 绘制无人机历史航迹、当前位置和火源标记。
   - 超过 3 秒未收到遥测时显示红色离线告警。
+  - 使用任务栏、地图卡片、状态徽标和分组遥测卡片强化信息层级，并自适应窗口尺寸。
+  - 内置默认场地参数，支持脱离 YAML 独立启动；异常 ROS 数据不会导致界面退出。
   - 支持空格或回车直接触发无人机启动。
 - 加固已有 `fire_event_bridge`：严格接收 16 字节火源包，避免超长 UDP 包被截断后误判为合法包。
+- 修复消防车到达照射位后未校验朝向的问题：车头对准火源后才允许开启激光，故障路径会立即下发 `OFF`。
 - 任务状态值与机车约定保持一致；车辆忙时重发当前合法状态，不再发送未约定的 `busy`。
 - 将通信桥和显示程序加入 `fire_mission.launch.py`，随消防任务统一启动。
 - 将通信端口、无人机 IP、按键、显示和场地参数集中到 `fire_params.yaml`。
@@ -35,12 +38,12 @@
 | 8890 任务状态回传 | 已实现并本机验证 | 回传给最近一次上报火源的无人机 IP |
 | 8892 无人机遥测接收 | 已实现并本机验证 | 32 字节定长、类型和 seq 校验 |
 | 8893 车端按键启动 | 已实现并本机验证 | 同一启动包默认连发 5 次 |
-| 车载遥测与航迹显示 | 已实现并无界面渲染验证 | 需要在真实屏幕确认全屏尺寸和中文字体 |
+| 车载遥测与航迹显示 | 已实现并模拟渲染验证 | 已验证 1280×720、800×480，仍需在真实屏幕确认全屏效果 |
 | Cartographer 定位 | 已有代码 | 需要使用实际雷达和场地验证 |
 | 消防路径规划与返航 | 已有代码 | 需要精确场地数据和实车验证 |
 | 差速底盘控制 | 已有代码 | 需要确认串口、控制点偏移和速度参数 |
 | 激光执行器 | 仅 mock | 尚未连接真实 GPIO，默认不会驱动激光 |
-| 开机自动运行 | 未配置 | 已能一条 launch 启动，但尚未安装 systemd/桌面自启动项 |
+| ROS 任务开机自动运行 | 未配置 | 已能一条 launch 启动，但尚未安装 systemd/桌面自启动项 |
 
 ## 系统链路
 
@@ -80,12 +83,12 @@ fire_mission_manager
 
 两块板的 `ROS_DOMAIN_ID` 可以不同，跨机数据不依赖 DDS，统一走 UDP。坐标均为场地坐标系，原点位于巡防区左下角，x 向右、y 向上，单位为 dm。
 
-默认网络参数：
+车板用外接 Tenda AIC8800DC USB 无线网卡自建热点。车端地址固定，无人机地址由 DHCP 动态分配：
 
-| 设备 | 默认 IP |
+| 设备 | 地址 |
 |---|---|
-| 消防车 | `192.168.10.161` |
-| 无人机 | `192.168.10.171` |
+| 消防车/AP | `10.42.0.1/24` |
+| 无人机 | `10.42.0.x`（DHCP，不可写死） |
 
 | 端口 | 方向 | 内容 | 格式 |
 |---|---|---|---|
@@ -108,7 +111,7 @@ ready / enroute / extinguishing / returning / done / failed:<reason>
 |---|---|---|
 | `/drone_start` | `std_msgs/Empty` | 触发一次无人机启动包连发 |
 | `/drone_start_button` | `std_msgs/Bool` | 外部按键节点输入，仅稳定按下沿触发 |
-| `/drone_telemetry` | `std_msgs/Float32MultiArray` | `[x_dm, y_dm, distance_dm, height_dm, phase, seq, stamp_ms]` |
+| `/drone_telemetry` | `std_msgs/Float32MultiArray` | `[x_dm, y_dm, distance_dm, height_dm, phase, seq]` |
 | `/fire_event` | `std_msgs/Float32MultiArray` | `[x_dm, y_dm, seq]` |
 | `/fire_mission_status` | `std_msgs/String` | 消防车任务状态，同时回传无人机 |
 | `/target_position` | `std_msgs/Float32MultiArray` | `[x_cm, y_cm, mode, yaw_deg]` |
@@ -135,7 +138,7 @@ ready / enroute / extinguishing / returning / done / failed:<reason>
 sudo apt update
 sudo apt install -y python3-colcon-common-extensions python3-rosdep \
   ros-humble-cartographer-ros ros-humble-robot-state-publisher \
-  python3-numpy python3-opencv python3-pil
+  python3-numpy python3-opencv python3-pil fonts-noto-cjk
 
 sudo rosdep init 2>/dev/null || true
 rosdep update
@@ -144,6 +147,9 @@ rosdep install --from-paths src --ignore-src -r -y --rosdistro humble
 source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 source install/setup.bash
+
+# 必须至少列出一种中文字体，否则仪表盘会 WARN 且中文可能显示为方块
+fc-list :lang=zh | head
 ```
 
 只重建本次主要修改的包：
@@ -157,15 +163,95 @@ colcon build --packages-select follower_pkg car_launch --symlink-install
 
 主要参数文件是 [`src/follower_pkg/config/fire_params.yaml`](src/follower_pkg/config/fire_params.yaml)。上车前至少检查以下项目：
 
-1. `fire_link_bridge.drone_ip`：必须与无人机实际静态 IP 一致。
-2. `telemetry_udp_port/start_udp_port`：默认分别为 `8892/8893`，两端必须一致且不能被占用。
-3. `button_gpio_value_path`：物理按键尚未指定时保持空字符串；指定后需确保该 GPIO 已配置为输入。
-4. `arena_origin_map_x_m/y_m/yaw_deg`：标定场地左下角在 Cartographer `map` 中的位置和朝向。
-5. `obstacles_dm`：当前六个街区边界来自赛题图估算，必须按真实场地重新测量。
-6. `home_x_dm/home_y_dm`：确认消防车红色出发区中心。
-7. `laser_gpio_driver.mock_mode`：真实 GPIO 驱动完成前必须保持 `true`。
-8. 雷达串口、波特率和型号：修改 `src/bluesea2/src/bluesea-ros2/params/uart_lidar.yaml`。
-9. 底盘串口：Orange Pi 默认 `/dev/ttyS6`；其他开发板使用实际 UART 或 USB-TTL 设备。
+1. `fire_link_bridge.drone_ip`：DHCP 场景保持 `""`。启动包依次使用学习到的遥测发送方、此静态参数和广播地址。
+2. `fallback_broadcast_ip`：默认 `10.42.0.255`；空字符串会禁用最后一级广播兜底。
+3. `telemetry_udp_port/start_udp_port`：默认分别为 `8892/8893`，两端必须一致且不能被占用。
+4. `button_gpio_value_path`：物理按键尚未指定时保持空字符串；指定后需确保该 GPIO 已配置为输入。
+5. `arena_origin_map_x_m/y_m/yaw_deg`：标定场地左下角在 Cartographer `map` 中的位置和朝向。
+6. `obstacles_dm`：当前六个街区边界来自赛题图估算，必须按真实场地重新测量。
+7. `home_x_dm/home_y_dm`：确认消防车红色出发区中心。
+8. `aim_tol_deg`：默认 `8°`；车辆只有在照射位内且车头朝向火源误差不超过此值时才开启激光。
+9. `laser_gpio_driver.mock_mode`：真实 GPIO 驱动完成前必须保持 `true`。
+10. 雷达串口、波特率和型号：修改 `src/bluesea2/src/bluesea-ros2/params/uart_lidar.yaml`。
+11. 底盘串口：Orange Pi 5 Max 默认 `/dev/ttyS6`，对应 40-pin 的物理 11/13 脚。
+
+## 热点、自启和防火墙
+
+热点连接名为 `AIC800-Hotspot`，接口为 `wlx500ff5fbebbb`。首次配置或修复配置时执行：
+
+```bash
+sudo nmcli connection add type wifi ifname wlx500ff5fbebbb con-name AIC800-Hotspot ssid AIC800-Hotspot
+sudo nmcli connection modify AIC800-Hotspot \
+  connection.autoconnect yes connection.interface-name wlx500ff5fbebbb \
+  802-11-wireless.mode ap 802-11-wireless.band bg 802-11-wireless.channel 6 \
+  802-11-wireless-security.key-mgmt wpa-psk \
+  802-11-wireless-security.psk 'CHANGE_ME_STRONG_PASSWORD' \
+  ipv4.method shared ipv4.addresses 10.42.0.1/24 ipv6.method disabled
+sudo systemctl enable NetworkManager
+sudo nmcli connection up AIC800-Hotspot
+```
+
+请将示例密码替换为现场专用强密码，不要把实际热点密码提交到公开仓库；无人机端保存同一密码并启用自动连接。
+
+重启后确认热点自动拉起、`shared` 和固定地址均生效：
+
+```bash
+systemctl is-enabled NetworkManager
+nmcli -g connection.autoconnect,802-11-wireless.mode,802-11-wireless.band,802-11-wireless.channel,ipv4.method,ipv4.addresses,ipv6.method connection show AIC800-Hotspot
+ip -4 address show dev wlx500ff5fbebbb
+```
+
+预期依次包含 `yes`、`ap`、`bg`、`6`、`shared`、`10.42.0.1/24`、`disabled`。`wlan0` 只负责外网；断开它不应影响热点内互通。
+
+NetworkManager 的 `shared` 模式会生成 DHCP、NAT 和 filter 规则，但本机防火墙仍可能拦截入站。车端检查：
+
+```bash
+ss -lunp | grep -E ':(8889|8892)\b'
+sudo nft list ruleset
+sudo ufw status verbose
+sudo tcpdump -ni wlx500ff5fbebbb 'udp port 8889 or udp port 8892'
+```
+
+若 UFW 已启用，显式放行热点接口上的两个车端入站口：
+
+```bash
+sudo ufw allow in on wlx500ff5fbebbb to 10.42.0.1 proto udp port 8889
+sudo ufw allow in on wlx500ff5fbebbb to 10.42.0.1 proto udp port 8892
+```
+
+另一台机器接入热点后，发送合法火源包和遥测包验证防火墙和 ROS 接收链路：
+
+```bash
+python3 -c "import socket,struct;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.sendto(struct.pack('<HHfff',0xFC11,1,12.0,20.0,0.0),('10.42.0.1',8889))"
+python3 -c "import socket,struct,time;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.sendto(struct.pack('<HBBHHIffffI',0xF14E,1,2,1,0,int(time.monotonic()*1000)&0xffffffff,12.0,20.0,30.0,18.0,0),('10.42.0.1',8892))"
+```
+
+车端 `tcpdump` 应看到两包，`ros2 topic echo --once /fire_event` 和 `ros2 topic echo --once /drone_telemetry` 应分别收到数据。只用 `nc -u` 可确认报文到达 `tcpdump`，但桥会丢弃长度或 magic 非法的数据，不能用它判断 ROS 发布。无人机必须开机自动连接 `AIC800-Hotspot`，IPv4 使用 DHCP，向 `10.42.0.1:8889/8892` 发送并监听 8890/8893。现场若 2.4 GHz 丢包严重，优先在 1/6/11 中换干净信道，不要先改代码。
+
+## Orange Pi 5 Max 物理启动按键
+
+推荐使用当前未被 UART6 占用的物理 16 脚：`GPIO1_A3`、Linux GPIO 35、wPi 9。按键一端接物理 16 脚，另一端接 GND（例如物理 14 脚）；GPIO 只能承受 3.3 V，禁止接 5 V。物理 11/13 脚是底盘 UART6，不要拿来接按键。
+
+关机接线后开机，先把引脚设为带上拉的输入，再导出兼容 sysfs 路径：
+
+```bash
+sudo gpio mode 9 in
+sudo gpio mode 9 up
+test -d /sys/class/gpio/gpio35 || echo 35 | sudo tee /sys/class/gpio/export
+echo in | sudo tee /sys/class/gpio/gpio35/direction
+sudo chmod a+r /sys/class/gpio/gpio35/value
+cat /sys/class/gpio/gpio35/value
+```
+
+松开应读到 `1`，按下应读到 `0`。然后在 `fire_params.yaml` 设置：
+
+```yaml
+button_gpio_value_path: "/sys/class/gpio/gpio35/value"
+button_active_low: true
+button_debounce_ms: 50
+```
+
+若改成“按下接 3.3 V、外部下拉”的接法，按下读 `1`，此时设 `button_active_low: false`。sysfs 导出、方向、上拉和读权限在重启后要重新设置，应把上述初始化做成 root 的 systemd oneshot，并让 ROS 任务服务 `After=` 它；先手工确认电平正确，再配置自启。[Orange Pi 5 Max 官方手册](https://orangepi.net/wp-content/uploads/2024/09/OrangePi_5_Max_RK3588_User-Manual_vv1.2-1.pdf)的 40-pin 表和 wiringOP 章节是引脚编号的基准，不要套用树莓派或其他 Orange Pi 型号的编号。
 
 ## 启动与调试
 
@@ -226,23 +312,26 @@ for i in range(100):
 
 显示器应看到无人机沿 `y=4 dm` 向右移动、里程持续增加；停止发送 3 秒后链路状态应变为离线。
 
+## `stamp_ms` 的 ROS 接口处理
+
+UDP 32 字节包中的 `stamp_ms` 保留不动，确保无人机端协议完全兼容；车端不再把它放入 `Float32MultiArray`。原因是 uint32 毫秒值转换为 float32 后只能保留约 7 位有效数字，无法可靠测量链路延迟。链路超时仍只使用车端本地收包时间。
+
 ## 已完成的软件验证
 
 - `follower_pkg` 与 `car_launch` 在 ROS 2 Humble 下构建通过。
 - `CAR_START` 的 32 字节小端布局、同序号 5 次冗余发送验证通过。
 - 遥测包的定长校验、类型校验、序号去重和 `65535 → 0` 回绕验证通过。
 - 火源包的 16 字节定长校验、序号去重和状态字符串回传验证通过。
-- 超长数据包不会被截断后误接收。
-- 显示器已在 headless 模式验证坐标、航迹、火源和状态渲染。
-- Python 语法、flake8、PEP 257、CMake lint 和 XML lint 通过。
-
-仓库原有部分 C++ 文件尚未统一 ROS 2 `uncrustify` 风格，因此完整 lint 中的格式检查仍会报告历史格式差异；这不影响当前构建和运行。
+- 超长数据包以及包含 `NaN/Inf` 的遥测/火源包不会被误接收，非法包不会占用序号。
+- 显示器已在 headless 模式验证默认参数、异常数据防护、坐标、航迹、火源和状态渲染。
+- 任务状态机已用模拟 TF 验证：到达照射位但未对准时不会启光，对准后才发布 `ON`。
+- Python 语法、flake8、PEP 257、CMake lint、XML lint 和全部 C++ `uncrustify` 检查通过。
 
 ## 还有什么需要做
 
 ### 比赛前必须完成
 
-- [ ] 确认无人机 IP 为 `192.168.10.171`，消防车 IP 为 `192.168.10.161`。
+- [ ] 确认消防车热点为 `10.42.0.1/24`，无人机已通过 DHCP 接入且能互相收发 UDP。
 - [ ] 确认无人机端已经同步使用 `8889/8890/8892/8893` 和本文档的两种定长包格式。
 - [ ] 两端使用同一个物理场地左下角联合标定，并用已知格点互相核对坐标。
 - [ ] 实测并更新六个街区、起降区和消防车出发区参数。
@@ -259,17 +348,8 @@ for i in range(100):
 - [ ] 给 `done` 和 `failed:*` 状态增加 3 次冗余回传。
 - [ ] 将通信数组话题替换为带字段名的自定义 ROS 消息，方便后续维护。
 - [ ] 增加可重复运行的自动化协议测试和 CI。
-- [ ] 统一现有 C++ 文件格式并清理上游雷达包的许可证/TODO 元数据。
+- [ ] 清理上游雷达包的许可证/TODO 元数据。
 - [ ] 若火源附近四个候选照射位均不可达，扩展更多候选角度和距离。
-
-## RDK X5 移植说明
-
-ROS 2 节点、UDP、Cartographer 和差速控制本身可在 ARM64 Ubuntu 22.04 上运行，但板级 I/O 不能直接照搬 Orange Pi：
-
-- 将 `/dev/ttyS6` 改为 X5 实际 UART（常见为 `/dev/ttyS1`）或 `/dev/ttyUSB*`。
-- 核对 3.3 V TTL 电平、TX/RX 交叉和共地，必要时使用电平转换。
-- 按 X5 的 GPIO 编号和复用方式实现按键及激光输出。
-- 在 X5 本机重新构建，并重新确认雷达 USB-UART 驱动和设备名。
 
 ## 文档
 

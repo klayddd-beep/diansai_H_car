@@ -26,7 +26,7 @@ fire_mission_manager → /laser_command → laser_gpio_driver → 激光笔 GPIO
 
 `fire_params.yaml` 使用题目场地坐标：原点在左下角，单位 dm，大小为 48×40。`arena_origin_map_*` 是场地坐标和 Cartographer `map` 的标定变换。`obstacles_dm` 是街区矩形 `[xmin,ymin,xmax,ymax,...]`；规划时再膨胀 `safety_margin_dm`，防止车轮压街区边界。
 
-任务管理器收到火点后，在火点四周寻找 4 dm 的可达照射位，用 1 dm 栅格 BFS 绕开膨胀后的街区；到位后激光照射 2.1 秒，再规划回红色出发区域。TF 丢失、目标不可达或返航不可达会停止任务，并向现有控制器发送当前位置保持目标。
+任务管理器收到火点后，在火点四周寻找 4 dm 的可达照射位，用 1 dm 栅格 BFS 绕开膨胀后的街区；到位并将车头对准火源后，激光照射 2.1 秒，再规划回红色出发区域。TF 丢失、目标不可达或返航不可达会立即发送激光 `OFF`、停止任务，并在定位仍可用时向控制器发送当前位置保持目标。照射朝向容差由 `aim_tol_deg` 配置，默认 8°。
 
 ## 已实现
 
