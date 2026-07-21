@@ -1,0 +1,30 @@
+diff_drive_controller:
+  ros__parameters:
+    kp_v: 1.0
+    v_max_mps: 0.3        # 小车,放慢求稳
+    kp_w: 1.5
+    w_max_rps: 0.8        # 转弯压慢,Cartographer 转弯不丢
+    align_gate_deg: 75.0  # 放大→角点边走边转走圆弧,少纯原地转
+    pos_tol_cm: 5.0
+    yaw_tol_deg: 8.0
+    target_timeout_s: 1.0
+    stop_burst_s: 1.0
+    publish_rate_hz: 20.0
+    # 控制点偏移(车体系,雷达→前驱动轮轴中点):本车轴在雷达前方 6.2cm、横向 0
+    ctrl_offset_x_cm: 6.2
+    ctrl_offset_y_cm: 0.0
+
+waypoint_test_publisher:
+  ros__parameters:
+    # 扁平航点 [x_cm, y_cm, yaw_deg, ...](map 系,起点为 carto 原点)。
+    # 1m 见方正方形,顺时针:起点(0,0)朝+x → (100,0) → (100,-100) → (0,-100) → 回(0,0)。
+    # yaw 列因 yaw_tol_deg=180 被忽略(只走 xy,角点走圆弧),填 0 占位即可。
+    waypoints: [100.0,    0.0,  0.0,
+                100.0, -100.0,  0.0,
+                  0.0, -100.0,  0.0,
+                  0.0,    0.0,  0.0]
+    pos_tol_cm: 15.0     # 到点容差放大,提前推进下一角 → 角点走圆弧、不停不原地转
+    yaw_tol_deg: 180.0   # 忽略末端朝向:到 xy 即推进,不做角点原地拧 yaw
+    publish_rate_hz: 10.0
+    start_delay_s: 3.0   # 等 carto/TF 上线
+    loop: false          # 跑一圈;想连续转圈改 true

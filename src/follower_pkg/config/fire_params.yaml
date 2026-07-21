@@ -1,0 +1,31 @@
+fire_event_bridge:
+  ros__parameters:
+    fire_udp_port: 8889
+    reply_port: 8890
+
+fire_mission_manager:
+  ros__parameters:
+    # Calibration: arena(0,0) expressed in map coordinates. Measure before running.
+    arena_origin_map_x_m: 0.0
+    arena_origin_map_y_m: 0.0
+    arena_origin_map_yaw_deg: 0.0
+    home_x_dm: 13.5
+    home_y_dm: 2.5
+    standoff_dm: 4.0
+    arrival_tol_dm: 1.2
+    laser_on_s: 2.1
+    grid_dm: 1.0
+    safety_margin_dm: 1.5
+    # [xmin, ymin, xmax, ymax, ...], arena dm. These are provisional estimates
+    # from the contest figure and MUST be measured against the physical field.
+    obstacles_dm: [6.0, 24.0, 18.0, 35.0,
+                   23.0, 25.0, 31.0, 35.0,
+                   37.0, 25.0, 45.0, 35.0,
+                   6.0,  7.0, 15.0, 20.0,
+                   20.0,  7.0, 32.0, 20.0,
+                   37.0,  3.0, 45.0, 20.0]
+
+laser_gpio_driver:
+  ros__parameters:
+    mock_mode: true
+    max_on_s: 3.0

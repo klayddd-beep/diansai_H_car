@@ -1,0 +1,28 @@
+# ROS 2 / colcon artifacts
+build/
+install/
+log/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editor-generated caches
+.vscode/
+
+# Local OS/editor noise
+.DS_Store
+Thumbs.db
+*~
+*.swp
