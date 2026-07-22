@@ -60,7 +60,7 @@ public:
   : Node("fire_link_bridge")
   {
     declare_parameter<int>("telemetry_udp_port", 8892);
-    declare_parameter<std::string>("drone_ip", "192.168.10.171");
+    declare_parameter<std::string>("drone_ip", "192.168.10.197");
     declare_parameter<int>("start_udp_port", 8893);
     declare_parameter<int>("start_redundancy", 5);
     declare_parameter<int>("start_interval_ms", 5);
