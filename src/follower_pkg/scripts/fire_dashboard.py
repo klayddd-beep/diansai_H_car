@@ -104,6 +104,9 @@ class FireDashboard(Node):
         self.track = []
         self.fire_point = None
         self.car_status = "ready"
+        self.start_button_rect = None
+        self.start_feedback_until = 0.0
+        self.start_cooldown_s = 2.0
         self.create_subscription(
             Float32MultiArray, "/drone_telemetry", self.on_telemetry, 10)
         self.create_subscription(
@@ -125,6 +128,7 @@ class FireDashboard(Node):
                     self.width, self.height = detected_w, detected_h
             else:
                 cv2.resizeWindow(WINDOW_NAME, self.width, self.height)
+            cv2.setMouseCallback(WINDOW_NAME, self.on_mouse)
 
     @staticmethod
     def _find_cjk_font():
@@ -400,17 +404,35 @@ class FireDashboard(Node):
 
         button_h = max(48, int(height * 0.09))
         button_top = top + height - padding - button_h
+        self.start_button_rect = (
+            x, button_top, x + inner_w, button_top + button_h)
+        showing_feedback = time.monotonic() < self.start_feedback_until
         draw.rounded_rectangle(
-            (x, button_top, x + inner_w, button_top + button_h),
+            self.start_button_rect,
             radius=button_h // 2,
-            fill=(21, 91, 107), outline=CYAN, width=2)
-        prompt = "空格 / 回车   启动无人机"
+            fill=(28, 112, 72) if showing_feedback else (21, 91, 107),
+            outline=GREEN if showing_feedback else CYAN, width=2)
+        prompt = "已发送启动指令" if showing_feedback else "点击启动无人机"
         prompt_size = max(14, int(title_size * 0.61))
         prompt_w = self.text_width(draw, prompt, prompt_size)
         self.text(draw, prompt,
                   (x + (inner_w - prompt_w) / 2,
                    button_top + (button_h - prompt_size) * 0.36),
                   prompt_size, TEXT)
+
+    def trigger_start(self):
+        now = time.monotonic()
+        if now < self.start_feedback_until:
+            return
+        self.start_publisher.publish(Empty())
+        self.start_feedback_until = now + self.start_cooldown_s
+
+    def on_mouse(self, event, x, y, _flags, _param):
+        if event != cv2.EVENT_LBUTTONDOWN or self.start_button_rect is None:
+            return
+        left, top, right, bottom = self.start_button_rect
+        if left <= x <= right and top <= y <= bottom:
+            self.trigger_start()
 
     def draw_header(self, draw, margin, header_h):
         icon_r = max(13, int(header_h * 0.27))
@@ -514,7 +536,7 @@ class FireDashboard(Node):
         if key == 27:
             return False
         if key in (13, 32):
-            self.start_publisher.publish(Empty())
+            self.trigger_start()
         return cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) >= 1
 
 

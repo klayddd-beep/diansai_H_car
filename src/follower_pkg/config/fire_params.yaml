@@ -2,6 +2,10 @@ fire_event_bridge:
   ros__parameters:
     fire_udp_port: 8889
     reply_port: 8890
+    # Reset duplicate filtering after a sender restart/stream interruption.
+    seq_reset_timeout_s: 3.0
+    final_status_redundancy: 3
+    final_status_interval_ms: 50
 
 fire_link_bridge:
   ros__parameters:
@@ -12,10 +16,11 @@ fire_link_bridge:
     start_udp_port: 8893
     start_redundancy: 5
     start_interval_ms: 5
+    seq_reset_timeout_s: 3.0
     # Optional physical button. Export/configure the GPIO as an input first, then
     # put its readable value file here (for example /sys/class/gpio/gpioNN/value).
     # Leave empty when using /drone_start or /drone_start_button instead.
-    button_gpio_value_path: ""
+    button_gpio_value_path: "/sys/class/gpio/gpio35/value"
     button_active_low: true
     button_debounce_ms: 50
 

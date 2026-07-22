@@ -64,6 +64,7 @@ public:
     declare_parameter<int>("start_udp_port", 8893);
     declare_parameter<int>("start_redundancy", 5);
     declare_parameter<int>("start_interval_ms", 5);
+    declare_parameter<double>("seq_reset_timeout_s", 3.0);
     declare_parameter<std::string>("button_gpio_value_path", "");
     declare_parameter<bool>("button_active_low", true);
     declare_parameter<int>("button_debounce_ms", 50);
@@ -77,6 +78,10 @@ public:
     active_low_ = get_parameter("button_active_low").as_bool();
     debounce_ms_ =
       std::max(0, static_cast<int>(get_parameter("button_debounce_ms").as_int()));
+    seq_reset_timeout_s_ = get_parameter("seq_reset_timeout_s").as_double();
+    if (!std::isfinite(seq_reset_timeout_s_) || seq_reset_timeout_s_ <= 0.0) {
+      throw std::runtime_error("seq_reset_timeout_s must be finite and greater than zero");
+    }
     if (telemetry_port_ < 1 || telemetry_port_ > 65535 ||
       start_port_ < 1 || start_port_ > 65535)
     {
@@ -192,12 +197,24 @@ private:
           "discarding telemetry packet containing NaN/Inf");
         continue;
       }
+      const auto now = std::chrono::steady_clock::now();
+      if (have_telemetry_seq_) {
+        const double gap_s = std::chrono::duration<double>(now - last_telemetry_time_).count();
+        if (gap_s > seq_reset_timeout_s_) {
+          RCLCPP_INFO(
+            get_logger(),
+            "telemetry stream restarted (gap %.1fs), resetting sequence filter", gap_s);
+          have_telemetry_seq_ = false;
+        }
+      }
       // A signed 16-bit delta handles normal uint16 sequence wraparound.
+      // After a stream gap, the sender may legitimately restart its sequence at zero.
       if (have_telemetry_seq_ && static_cast<int16_t>(packet.seq - last_telemetry_seq_) <= 0) {
         continue;
       }
       last_telemetry_seq_ = packet.seq;
       have_telemetry_seq_ = true;
+      last_telemetry_time_ = now;
       std_msgs::msg::Float32MultiArray msg;
       msg.layout.dim.resize(1);
       msg.layout.dim[0].label = "x_dm,y_dm,distance_dm,height_dm,phase,seq";
@@ -300,6 +317,7 @@ private:
   int redundancy_{5};
   int start_interval_ms_{5};
   int debounce_ms_{50};
+  double seq_reset_timeout_s_{3.0};
   bool active_low_{true};
   bool have_telemetry_seq_{false};
   bool topic_button_pressed_{false};
@@ -311,6 +329,7 @@ private:
   int pending_start_packets_{0};
   std::string gpio_path_;
   std::chrono::steady_clock::time_point gpio_candidate_since_{};
+  std::chrono::steady_clock::time_point last_telemetry_time_{};
   sockaddr_in destination_{};
   FireLinkPacket start_packet_{};
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr telemetry_pub_;
