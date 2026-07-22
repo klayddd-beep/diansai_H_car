@@ -120,8 +120,17 @@ class FireDashboard(Node):
             Empty, "/fire_mission_reset", 10)
 
         if not self.headless:
-            cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+            # HighGUI keeps the source image's aspect ratio by default.  When
+            # that ratio differs from the display, the unused area becomes a
+            # visible border even though the native window is full-screen.
+            # FREERATIO makes the image fill the complete window client area.
+            cv2.namedWindow(
+                WINDOW_NAME, cv2.WINDOW_NORMAL | cv2.WINDOW_FREERATIO)
+            cv2.setWindowProperty(
+                WINDOW_NAME, cv2.WND_PROP_ASPECT_RATIO,
+                cv2.WINDOW_FREERATIO)
             if self.fullscreen:
+                cv2.moveWindow(WINDOW_NAME, 0, 0)
                 cv2.setWindowProperty(
                     WINDOW_NAME, cv2.WND_PROP_FULLSCREEN,
                     cv2.WINDOW_FULLSCREEN)
