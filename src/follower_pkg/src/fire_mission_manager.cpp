@@ -341,6 +341,10 @@ private:
       return;
     }
     if (state_ == State::LASER_ON) {
+      if (laser_state_ == "error") {
+        fail("laser_gpio_error");
+        return;
+      }
       if (laser_state_ == "timeout_off") {
         fail("laser_timeout");
         return;

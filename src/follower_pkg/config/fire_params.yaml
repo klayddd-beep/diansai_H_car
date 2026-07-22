@@ -66,5 +66,12 @@ fire_dashboard:
 
 laser_gpio_driver:
   ros__parameters:
-    mock_mode: true
+    # Orange Pi 5 Max physical pin 22: GPIO1_B0 / Linux GPIO 40 / wPi 13.
+    # The measured idle HIGH level turns this laser interface OFF, so it is
+    # active-low: LOW=ON, HIGH=OFF.
+    mock_mode: false
+    gpio_number: 40
+    active_low: true
+    gpio_command: "/usr/bin/gpio"
+    startup_on: false
     max_on_s: 3.0
