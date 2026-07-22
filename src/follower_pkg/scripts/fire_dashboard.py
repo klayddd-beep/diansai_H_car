@@ -3,6 +3,8 @@
 
 import math
 import os
+import re
+import subprocess
 import time
 
 import cv2
@@ -120,6 +122,16 @@ class FireDashboard(Node):
             Empty, "/fire_mission_reset", 10)
 
         if not self.headless:
+            if self.fullscreen:
+                screen_size = self._detect_screen_size()
+                if screen_size is not None:
+                    self.width, self.height = screen_size
+                    self.get_logger().info(
+                        f"全屏画布尺寸: {self.width}x{self.height}")
+                else:
+                    self.get_logger().warning(
+                        "无法通过 XRandR 获取屏幕尺寸，使用配置的画布尺寸 "
+                        f"{self.width}x{self.height}")
             # HighGUI keeps the source image's aspect ratio by default.  When
             # that ratio differs from the display, the unused area becomes a
             # visible border even though the native window is full-screen.
@@ -134,14 +146,30 @@ class FireDashboard(Node):
                 cv2.setWindowProperty(
                     WINDOW_NAME, cv2.WND_PROP_FULLSCREEN,
                     cv2.WINDOW_FULLSCREEN)
-                # Query the actual full-screen drawable size when supported.
-                _, _, detected_w, detected_h = cv2.getWindowImageRect(
-                    WINDOW_NAME)
-                if detected_w > 100 and detected_h > 100:
-                    self.width, self.height = detected_w, detected_h
             else:
                 cv2.resizeWindow(WINDOW_NAME, self.width, self.height)
             cv2.setMouseCallback(WINDOW_NAME, self.on_mouse)
+
+    @staticmethod
+    def _screen_size_from_xrandr(output):
+        match = re.search(r"\bcurrent\s+(\d+)\s+x\s+(\d+)\b", output)
+        if match is None:
+            return None
+        width, height = (int(value) for value in match.groups())
+        if width <= 100 or height <= 100:
+            return None
+        return width, height
+
+    def _detect_screen_size(self):
+        try:
+            result = subprocess.run(
+                ["xrandr", "--current"], check=False, capture_output=True,
+                text=True, timeout=2.0)
+        except (FileNotFoundError, subprocess.SubprocessError, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        return self._screen_size_from_xrandr(result.stdout)
 
     @staticmethod
     def _find_cjk_font():
@@ -544,7 +572,11 @@ class FireDashboard(Node):
             cursor_x += self.text_width(draw, label, subtitle_size) + 20
 
     def render(self):
-        if not self.headless:
+        # In the Qt5 backend getWindowImageRect() reports the centered image
+        # viewport, not the native full-screen window.  Reading it in
+        # full-screen mode would shrink the next frame and recreate the white
+        # border.  It remains useful for a user-resizable window.
+        if not self.headless and not self.fullscreen:
             try:
                 _, _, detected_w, detected_h = cv2.getWindowImageRect(
                     WINDOW_NAME)
