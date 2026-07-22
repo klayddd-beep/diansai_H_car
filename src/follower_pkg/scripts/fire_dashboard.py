@@ -105,7 +105,9 @@ class FireDashboard(Node):
         self.fire_point = None
         self.car_status = "ready"
         self.start_button_rect = None
+        self.reset_button_rect = None
         self.start_feedback_until = 0.0
+        self.reset_feedback_until = 0.0
         self.start_cooldown_s = 2.0
         self.create_subscription(
             Float32MultiArray, "/drone_telemetry", self.on_telemetry, 10)
@@ -114,6 +116,8 @@ class FireDashboard(Node):
         self.create_subscription(
             String, "/fire_mission_status", self.on_status, 10)
         self.start_publisher = self.create_publisher(Empty, "/drone_start", 10)
+        self.reset_publisher = self.create_publisher(
+            Empty, "/fire_mission_reset", 10)
 
         if not self.headless:
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -404,21 +408,40 @@ class FireDashboard(Node):
 
         button_h = max(48, int(height * 0.09))
         button_top = top + height - padding - button_h
+        button_gap = max(9, int(width * 0.025))
+        button_w = (inner_w - button_gap) / 2
         self.start_button_rect = (
-            x, button_top, x + inner_w, button_top + button_h)
+            x, button_top, x + button_w, button_top + button_h)
+        self.reset_button_rect = (
+            x + button_w + button_gap, button_top,
+            x + inner_w, button_top + button_h)
         showing_feedback = time.monotonic() < self.start_feedback_until
         draw.rounded_rectangle(
             self.start_button_rect,
             radius=button_h // 2,
             fill=(28, 112, 72) if showing_feedback else (21, 91, 107),
             outline=GREEN if showing_feedback else CYAN, width=2)
-        prompt = "已发送启动指令" if showing_feedback else "点击启动无人机"
-        prompt_size = max(14, int(title_size * 0.61))
+        prompt = "已发送" if showing_feedback else "启动无人机"
+        prompt_size = max(14, int(title_size * 0.56))
         prompt_w = self.text_width(draw, prompt, prompt_size)
         self.text(draw, prompt,
-                  (x + (inner_w - prompt_w) / 2,
+                  (x + (button_w - prompt_w) / 2,
                    button_top + (button_h - prompt_size) * 0.36),
                   prompt_size, TEXT)
+
+        reset_feedback = time.monotonic() < self.reset_feedback_until
+        draw.rounded_rectangle(
+            self.reset_button_rect,
+            radius=button_h // 2,
+            fill=(112, 72, 28) if reset_feedback else (77, 55, 37),
+            outline=AMBER, width=2)
+        reset_prompt = "已复位" if reset_feedback else "复位消防车"
+        reset_w = self.text_width(draw, reset_prompt, prompt_size)
+        self.text(
+            draw, reset_prompt,
+            (x + button_w + button_gap + (button_w - reset_w) / 2,
+             button_top + (button_h - prompt_size) * 0.36),
+            prompt_size, TEXT)
 
     def trigger_start(self):
         now = time.monotonic()
@@ -427,12 +450,25 @@ class FireDashboard(Node):
         self.start_publisher.publish(Empty())
         self.start_feedback_until = now + self.start_cooldown_s
 
-    def on_mouse(self, event, x, y, _flags, _param):
-        if event != cv2.EVENT_LBUTTONDOWN or self.start_button_rect is None:
+    def trigger_reset(self):
+        now = time.monotonic()
+        if now < self.reset_feedback_until:
             return
-        left, top, right, bottom = self.start_button_rect
-        if left <= x <= right and top <= y <= bottom:
-            self.trigger_start()
+        self.reset_publisher.publish(Empty())
+        self.reset_feedback_until = now + self.start_cooldown_s
+
+    def on_mouse(self, event, x, y, _flags, _param):
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+        if self.start_button_rect is not None:
+            left, top, right, bottom = self.start_button_rect
+            if left <= x <= right and top <= y <= bottom:
+                self.trigger_start()
+                return
+        if self.reset_button_rect is not None:
+            left, top, right, bottom = self.reset_button_rect
+            if left <= x <= right and top <= y <= bottom:
+                self.trigger_reset()
 
     def draw_header(self, draw, margin, header_h):
         icon_r = max(13, int(header_h * 0.27))
@@ -537,6 +573,8 @@ class FireDashboard(Node):
             return False
         if key in (13, 32):
             self.trigger_start()
+        if key in (ord("r"), ord("R")):
+            self.trigger_reset()
         return cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) >= 1
 
 

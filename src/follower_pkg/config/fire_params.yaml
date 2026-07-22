@@ -39,6 +39,12 @@ fire_mission_manager:
     laser_on_s: 2.1
     grid_dm: 1.0
     safety_margin_dm: 1.5
+    # Keep the car stopped during a transient pose failure; fail only after this
+    # continuous grace period. Reject a cached Cartographer TF older than 0.5 s.
+    pose_failure_timeout_s: 1.0
+    tf_max_age_s: 0.5
+    # A pose up to 3 dm beyond a boundary is warned about but remains usable.
+    outside_arena_margin_dm: 3.0
     # [xmin, ymin, xmax, ymax, ...], arena dm. These are provisional estimates
     # from the contest figure and MUST be measured against the physical field.
     obstacles_dm: [6.0, 24.0, 18.0, 35.0,

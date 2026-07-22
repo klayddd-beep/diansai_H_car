@@ -27,6 +27,10 @@
 - 加固已有 `fire_event_bridge`：严格接收 16 字节火源包，避免超长 UDP 包被截断后误判为合法包。
 - 火源流中断 3 秒后复位序号过滤器；`done` 和 `failed:*` 终态以 50 ms 间隔回传 3 次。
 - 修复消防车到达照射位后未校验朝向的问题：车头对准火源后才允许开启激光，故障路径会立即下发 `OFF`。
+- 定位查询短时异常时停车并等待恢复，连续异常超过可配置阈值才进入
+  `SAFE_STOP`；TF 丢失与场地越界分别上报，边界外保留可配置裕量。
+- 新增 `/fire_mission_reset` 和仪表盘“复位消防车”触屏按钮，无需重启
+  launch 即可从 `SAFE_STOP` 返回待命并重新接收火源。
 - 任务状态值与机车约定保持一致；车辆忙时重发当前合法状态，不再发送未约定的 `busy`。
 - 将通信桥和显示程序加入 `fire_mission.launch.py`，随消防任务统一启动。
 - 将通信端口、无人机 IP、按键、显示和场地参数集中到 `fire_params.yaml`。
@@ -113,6 +117,7 @@ ready / enroute / extinguishing / returning / done / failed:<reason>
 |---|---|---|
 | `/drone_start` | `std_msgs/Empty` | 触发一次无人机启动包连发 |
 | `/drone_start_button` | `std_msgs/Bool` | 外部按键节点输入，仅稳定按下沿触发 |
+| `/fire_mission_reset` | `std_msgs/Empty` | 安全关闭激光并将任务状态复位到 `IDLE` |
 | `/drone_telemetry` | `std_msgs/Float32MultiArray` | `[x_dm, y_dm, distance_dm, height_dm, phase, seq]` |
 | `/fire_event` | `std_msgs/Float32MultiArray` | `[x_dm, y_dm, seq]` |
 | `/fire_mission_status` | `std_msgs/String` | 消防车任务状态，同时回传无人机 |
@@ -173,9 +178,12 @@ colcon build --packages-select follower_pkg car_launch --symlink-install
 6. `obstacles_dm`：当前六个街区边界来自赛题图估算，必须按真实场地重新测量。
 7. `home_x_dm/home_y_dm`：确认消防车红色出发区中心。
 8. `aim_tol_deg`：默认 `8°`；车辆只有在照射位内且车头朝向火源误差不超过此值时才开启激光。
-9. `laser_gpio_driver`：已配置为物理 22 脚 `GPIO1_B0`（Linux GPIO 40、wPi 13），实测高电平关闭，因此使用 `active_low: true`。
-10. 雷达串口、波特率和型号：修改 `src/bluesea2/src/bluesea-ros2/params/uart_lidar.yaml`。
-11. 底盘串口：Orange Pi 5 Max 默认 `/dev/ttyS6`，对应 40-pin 的物理 11/13 脚。
+9. `pose_failure_timeout_s`：连续定位异常的停车宽限期，默认 `1.0` 秒。
+10. `tf_max_age_s`：超过该时间未更新的 TF 视为丢失，默认 `0.5` 秒。
+11. `outside_arena_margin_dm`：场地边界外仍可容忍的标定/压线裕量，默认 `3.0` dm。
+12. `laser_gpio_driver`：已配置为物理 22 脚 `GPIO1_B0`（Linux GPIO 40、wPi 13），实测高电平关闭，因此使用 `active_low: true`。
+13. 雷达串口、波特率和型号：修改 `src/bluesea2/src/bluesea-ros2/params/uart_lidar.yaml`。
+14. 底盘串口：Orange Pi 5 Max 默认 `/dev/ttyS6`，对应 40-pin 的物理 11/13 脚。
 
 ## 固定路由、防火墙和联调
 

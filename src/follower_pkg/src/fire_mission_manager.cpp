@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "tf2/LinearMath/Matrix3x3.h"
@@ -50,6 +51,9 @@ public:
     declare_parameter<double>("laser_on_s", 2.1);
     declare_parameter<double>("grid_dm", 1.0);
     declare_parameter<double>("safety_margin_dm", 1.5);
+    declare_parameter<double>("pose_failure_timeout_s", 1.0);
+    declare_parameter<double>("tf_max_age_s", 0.5);
+    declare_parameter<double>("outside_arena_margin_dm", 3.0);
     declare_parameter<std::vector<double>>(
       "obstacles_dm", std::vector<double>{});
 
@@ -66,6 +70,11 @@ public:
     laser_on_s_ = get_parameter("laser_on_s").as_double();
     grid_dm_ = get_parameter("grid_dm").as_double();
     safety_margin_dm_ = get_parameter("safety_margin_dm").as_double();
+    pose_failure_timeout_s_ =
+      get_parameter("pose_failure_timeout_s").as_double();
+    tf_max_age_s_ = get_parameter("tf_max_age_s").as_double();
+    outside_arena_margin_dm_ =
+      get_parameter("outside_arena_margin_dm").as_double();
     obstacles_ = get_parameter("obstacles_dm").as_double_array();
     validate_parameters();
 
@@ -91,13 +100,17 @@ public:
       [this](std_msgs::msg::String::SharedPtr message) {
         laser_state_ = message->data;
       });
+    reset_subscription_ = create_subscription<std_msgs::msg::Empty>(
+      "/fire_mission_reset", 10,
+      [this](std_msgs::msg::Empty::SharedPtr) {reset();});
     timer_ = create_wall_timer(
       std::chrono::milliseconds(100), [this]() {tick();});
     report("ready");
   }
 
 private:
-  enum class State {IDLE, DRIVE_FIRE, LASER_ON, DRIVE_HOME, SAFE_STOP};
+  enum class State {IDLE, WAIT_POSE, DRIVE_FIRE, LASER_ON, DRIVE_HOME, SAFE_STOP};
+  enum class PoseResult {OK, TF_LOST, OUTSIDE_ARENA};
 
   void validate_parameters() const
   {
@@ -114,7 +127,10 @@ private:
       !std::isfinite(aim_tol_rad_) || aim_tol_rad_ <= 0.0 ||
       !std::isfinite(laser_on_s_) || laser_on_s_ <= 0.0 ||
       !std::isfinite(grid_dm_) || grid_dm_ <= 0.0 ||
-      !std::isfinite(safety_margin_dm_) || safety_margin_dm_ < 0.0)
+      !std::isfinite(safety_margin_dm_) || safety_margin_dm_ < 0.0 ||
+      !std::isfinite(pose_failure_timeout_s_) || pose_failure_timeout_s_ <= 0.0 ||
+      !std::isfinite(tf_max_age_s_) || tf_max_age_s_ <= 0.0 ||
+      !std::isfinite(outside_arena_margin_dm_) || outside_arena_margin_dm_ < 0.0)
     {
       throw std::invalid_argument("mission distances and durations are invalid");
     }
@@ -143,11 +159,39 @@ private:
            point.y >= 0.0 && point.y <= kArenaHeightDm;
   }
 
-  bool get_pose(Point & point, double & yaw_map)
+  bool inside_arena_margin(const Point & point) const
+  {
+    return std::isfinite(point.x) && std::isfinite(point.y) &&
+           point.x >= -outside_arena_margin_dm_ &&
+           point.x <= kArenaWidthDm + outside_arena_margin_dm_ &&
+           point.y >= -outside_arena_margin_dm_ &&
+           point.y <= kArenaHeightDm + outside_arena_margin_dm_;
+  }
+
+  static Point clamp_to_arena(const Point & point)
+  {
+    return {
+      std::clamp(point.x, 0.0, kArenaWidthDm),
+      std::clamp(point.y, 0.0, kArenaHeightDm)};
+  }
+
+  PoseResult get_pose(Point & point, double & yaw_map)
   {
     try {
       const auto transform = tf_buffer_->lookupTransform(
         "map", "laser_link", tf2::TimePointZero);
+      last_tf_error_.clear();
+      const rclcpp::Time transform_time(transform.header.stamp);
+      const double transform_age_s = transform_time.nanoseconds() == 0 ?
+        0.0 : std::max(0.0, (now() - transform_time).seconds());
+      if (transform_time.nanoseconds() != 0 && transform_age_s > tf_max_age_s_) {
+        last_tf_error_ = "latest transform is stale";
+        // Count the outage from the last TF update, not from the later tick
+        // that first noticed it was stale.
+        pose_failure_initial_elapsed_s_ = transform_age_s;
+        return PoseResult::TF_LOST;
+      }
+      pose_failure_initial_elapsed_s_ = 0.0;
       tf2::Quaternion quaternion;
       tf2::fromMsg(transform.transform.rotation, quaternion);
       double roll = 0.0;
@@ -160,13 +204,72 @@ private:
       const double sine = std::sin(origin_yaw_rad_);
       point.x = (cosine * dx + sine * dy) * 10.0;
       point.y = (-sine * dx + cosine * dy) * 10.0;
-      return inside_arena(point) && std::isfinite(yaw_map);
+      if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
+        !std::isfinite(yaw_map))
+      {
+        return PoseResult::TF_LOST;
+      }
+      if (!inside_arena_margin(point)) {
+        return PoseResult::OUTSIDE_ARENA;
+      }
+      if (!inside_arena(point)) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 2000,
+          "Pose (%.2f, %.2f) dm is outside the arena but within the %.2f dm margin; continuing",
+          point.x, point.y, outside_arena_margin_dm_);
+      }
+      return PoseResult::OK;
     } catch (const tf2::TransformException & error) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "TF unavailable: %s", error.what());
+      last_tf_error_ = error.what();
+      pose_failure_initial_elapsed_s_ = 0.0;
+      return PoseResult::TF_LOST;
+    }
+  }
+
+  const char * pose_failure_reason(PoseResult result) const
+  {
+    return result == PoseResult::OUTSIDE_ARENA ? "outside_arena" : "tf_lost";
+  }
+
+  bool tolerate_pose_failure(
+    PoseResult result, const Point & observed_point, double observed_yaw_map)
+  {
+    const auto current_time = now();
+    if (!pose_failure_active_) {
+      pose_failure_active_ = true;
+      pose_failure_started_at_ =
+        current_time - rclcpp::Duration::from_seconds(pose_failure_initial_elapsed_s_);
+    }
+    const double elapsed_s = (current_time - pose_failure_started_at_).seconds();
+    if (result == PoseResult::OUTSIDE_ARENA) {
+      // TF itself is valid, so holding the observed pose stops without driving
+      // back toward an older position.
+      publish_target(observed_point, observed_yaw_map);
+    } else if (have_last_valid_pose_) {
+      publish_target(last_valid_pose_, last_valid_yaw_map_);
+    }
+    RCLCPP_WARN_THROTTLE(
+      get_logger(), *get_clock(), 1000,
+      "Pose failure '%s' has lasted %.2f s (limit %.2f s); holding position%s%s",
+      pose_failure_reason(result), elapsed_s, pose_failure_timeout_s_,
+      last_tf_error_.empty() ? "" : ": ", last_tf_error_.c_str());
+    if (elapsed_s >= pose_failure_timeout_s_) {
+      fail(pose_failure_reason(result));
       return false;
     }
+    return true;
+  }
+
+  void accept_pose(const Point & point, double yaw_map)
+  {
+    if (pose_failure_active_) {
+      RCLCPP_INFO(get_logger(), "Pose recovered; resuming mission");
+    }
+    pose_failure_active_ = false;
+    last_tf_error_.clear();
+    last_valid_pose_ = point;
+    last_valid_yaw_map_ = yaw_map;
+    have_last_valid_pose_ = true;
   }
 
   bool blocked(double x, double y) const
@@ -274,21 +377,22 @@ private:
       return;
     }
 
-    Point current{};
-    double yaw = 0.0;
-    if (!get_pose(current, yaw)) {
-      fail("tf_lost");
-      return;
-    }
     fire_point_ = requested_fire;
+    state_ = State::WAIT_POSE;
+    tick();
+  }
+
+  void start_mission(const Point & current)
+  {
     const std::vector<Point> candidates = {
       {fire_point_.x - standoff_dm_, fire_point_.y},
       {fire_point_.x + standoff_dm_, fire_point_.y},
       {fire_point_.x, fire_point_.y - standoff_dm_},
       {fire_point_.x, fire_point_.y + standoff_dm_}};
     path_.clear();
+    const Point planning_start = clamp_to_arena(current);
     for (const auto & candidate : candidates) {
-      const auto candidate_path = plan(current, candidate);
+      const auto candidate_path = plan(planning_start, candidate);
       if (!candidate_path.empty() &&
         (path_.empty() || candidate_path.size() < path_.size()))
       {
@@ -336,8 +440,14 @@ private:
 
     Point current{};
     double yaw_map = 0.0;
-    if (!get_pose(current, yaw_map)) {
-      fail("tf_lost");
+    const PoseResult pose_result = get_pose(current, yaw_map);
+    if (pose_result != PoseResult::OK) {
+      tolerate_pose_failure(pose_result, current, yaw_map);
+      return;
+    }
+    accept_pose(current, yaw_map);
+    if (state_ == State::WAIT_POSE) {
+      start_mission(current);
       return;
     }
     if (state_ == State::LASER_ON) {
@@ -351,7 +461,7 @@ private:
       }
       if ((now() - laser_started_at_).seconds() >= laser_on_s_) {
         publish_laser("OFF");
-        path_ = plan(current, home_);
+        path_ = plan(clamp_to_arena(current), home_);
         if (path_.empty()) {
           fail("home_unreachable");
           return;
@@ -407,12 +517,26 @@ private:
     // OFF is harmless in mock mode and is mandatory once a real driver is used.
     publish_laser("OFF");
     state_ = State::SAFE_STOP;
-    Point current{};
-    double yaw = 0.0;
-    if (get_pose(current, yaw)) {
-      publish_target(current, yaw);
+    if (have_last_valid_pose_) {
+      publish_target(last_valid_pose_, last_valid_yaw_map_);
     }
     report("failed:" + reason);
+  }
+
+  void reset()
+  {
+    publish_laser("OFF");
+    if (have_last_valid_pose_) {
+      publish_target(last_valid_pose_, last_valid_yaw_map_);
+    }
+    path_.clear();
+    waypoint_index_ = 0;
+    laser_state_.clear();
+    pose_failure_active_ = false;
+    last_tf_error_.clear();
+    state_ = State::IDLE;
+    report("ready");
+    RCLCPP_INFO(get_logger(), "Mission reset to IDLE via /fire_mission_reset");
   }
 
   void report(const std::string & status)
@@ -433,6 +557,9 @@ private:
   double laser_on_s_{2.1};
   double grid_dm_{1.0};
   double safety_margin_dm_{1.5};
+  double pose_failure_timeout_s_{1.0};
+  double tf_max_age_s_{0.5};
+  double outside_arena_margin_dm_{3.0};
   Point home_{};
   Point fire_point_{};
   std::vector<double> obstacles_;
@@ -441,6 +568,13 @@ private:
   std::string laser_state_;
   std::string current_status_{"ready"};
   rclcpp::Time laser_started_at_;
+  bool pose_failure_active_{false};
+  rclcpp::Time pose_failure_started_at_;
+  Point last_valid_pose_{};
+  double last_valid_yaw_map_{0.0};
+  bool have_last_valid_pose_{false};
+  std::string last_tf_error_;
+  double pose_failure_initial_elapsed_s_{0.0};
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr
@@ -451,6 +585,7 @@ private:
     fire_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
     laser_status_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr reset_subscription_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
