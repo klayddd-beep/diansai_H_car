@@ -21,7 +21,7 @@ fire_event_bridge:
     fire_udp_port: 8889
     reply_port: 8890
     # Used for status replies until the first fire packet teaches us the sender address.
-    drone_ip: "192.168.10.197"
+    drone_ip: "10.42.0.1"
     # Reset duplicate filtering after a sender restart/stream interruption.
     seq_reset_timeout_s: 3.0
     final_status_redundancy: 3
@@ -32,7 +32,7 @@ fire_link_bridge:
     # Aircraft/car communication agreement: telemetry in on 8892, start out on 8893.
     telemetry_udp_port: 8892
     # Fixed-router address of the aircraft. The car uses 192.168.10.113.
-    drone_ip: "192.168.10.197"
+    drone_ip: "10.42.0.1"
     start_udp_port: 8893
     start_redundancy: 5
     start_interval_ms: 5
