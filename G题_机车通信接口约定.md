@@ -2,7 +2,8 @@
 
 > 2023 电赛 G 题 空地协同智能消防系统。
 > 无人机侧仓库：`kian_26fly`(分支 `fire-task`)，消防车侧仓库：`diansai_H_car`。
-> 两块板 `ROS_DOMAIN_ID` 不同、DDS 不互通，**所有跨机通信一律走 UDP**。
+> 两块板的业务节点 `ROS_DOMAIN_ID` 不同；四条任务控制/遥测通道一律走 UDP。
+> §十另有一条由飞机侧双域桥接到车端域 6 的**可选调试视频**，不参与任务控制。
 >
 > 本文是两边的**唯一契约**。任何一侧改包格式/端口，必须同步改本文和另一侧。
 > 固定场地区域坐标以 [`G题_场地区域坐标.md`](G题_场地区域坐标.md) 为唯一依据，
@@ -369,3 +370,65 @@ for i in range(100):
 - [ ] 状态字符串取值集合是否仍是 `ready/enroute/extinguishing/returning/done/failed:<reason>`
 - [ ] 8892 / 8893 这两个端口有没有和你们别的东西冲突
 - [ ] 车载屏幕的**分辨率**是多少、板子上**有没有桌面环境**（决定显示程序怎么写、字号怎么定）
+
+---
+
+## 十、可选调试视频（无人机 → 消防车）
+
+此通道是预备功能，不参与当前题目的控制、遥测、火源上报或评分流程。无人机侧用
+双域桥把域 26 内的一条标注图话题搬到车端原有的域 6，并加 `/fly` 前缀；飞机其余
+话题不会进入域 6。
+
+| 项 | 值 |
+|---|---|
+| `ROS_DOMAIN_ID` | `6`（车端原有域） |
+| 话题 | `/fly/fire/debug_image/compressed` |
+| 类型 | `sensor_msgs/msg/CompressedImage` |
+| `format` | `jpeg` |
+| QoS | `BEST_EFFORT` + `KEEP_LAST(1)` |
+| 分辨率 | 宽 320，高度按原图比例（一般 240） |
+| 帧率 | ≤ 10 Hz |
+| 码率 | ≤ 800 kbps |
+| `header.frame_id` | `laser_link` |
+| `header.stamp` | 无人机本地时钟，禁止与车端时钟作差 |
+
+> **订阅端必须使用 `BEST_EFFORT`。** 飞机发布端是 best-effort；reliable 订阅不会
+> 收到任何帧，也不一定报错。Python 应基于 `qos_profile_sensor_data`，C++ 应使用
+> `rclcpp::SensorDataQoS()`。链路超时只能用车端收到帧时的本地单调时钟判断。
+
+车端预备包 `fire_video_receiver_pkg` 已实现 JPEG 解码、5 秒吞吐统计和超过 2 秒无
+新帧的 `LOST` 提示，但**没有加入正式任务 launch，也没有接入 `fire_dashboard.py`**。
+需要时单独构建并手动启动：
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --packages-select fire_video_receiver_pkg --symlink-install
+source install/setup.bash
+export ROS_DOMAIN_ID=6
+export ROS_LOCALHOST_ONLY=0
+
+# 带独立窗口；ESC/Q 退出
+ros2 launch fire_video_receiver_pkg video_receiver.launch.py
+
+# 只收流并打印帧率/码率，不打开窗口
+ros2 launch fire_video_receiver_pkg video_receiver.launch.py display:=false
+```
+
+不用本包也可快速验收：
+
+```bash
+echo "$ROS_DOMAIN_ID"                              # 必须为 6
+ros2 topic list | grep fly
+ros2 topic hz /fly/fire/debug_image/compressed
+ros2 topic bw /fly/fire/debug_image/compressed
+ros2 run rqt_image_view rqt_image_view /fly/fire/debug_image/compressed
+```
+
+飞机侧前提是 `fire_video_bridge` 已启动且视觉节点已打开
+`enable_debug_image`。若话题存在但自写节点无帧，先查 QoS 和
+`CompressedImage` 类型；若话题不存在，再查飞机桥和网络。两机能 ping 但 DDS
+互不可见时，检查路由器 DDS 多播，必要时两端按固定 IP（车 `.113`、机 `.197`）
+配置 Fast DDS 单播发现。
+
+带宽优先级固定为：UDP 控制包（8892/8893）> 视频帧率 > 视频画质。视频保持
+320 宽、≤10 Hz、≤800 kbps；只有实测 UDP 控制链路稳定后才考虑提高画质。

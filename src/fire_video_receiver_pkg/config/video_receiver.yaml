@@ -1,0 +1,7 @@
+fire_video_receiver:
+  ros__parameters:
+    topic: "/fly/fire/debug_image/compressed"
+    display: true
+    link_timeout_s: 2.0
+    stats_period_s: 5.0
+    window_name: "Drone fire debug video"
