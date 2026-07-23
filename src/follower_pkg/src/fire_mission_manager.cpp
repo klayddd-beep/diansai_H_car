@@ -44,12 +44,13 @@ public:
   FireMissionManager()
   : Node("fire_mission_manager")
   {
-    declare_parameter<double>("arena_origin_map_x_m", 0.0);
-    declare_parameter<double>("arena_origin_map_y_m", 0.0);
-    declare_parameter<double>("arena_origin_map_yaw_deg", 0.0);
+    declare_parameter<double>("arena_origin_map_x_m", -0.25);
+    declare_parameter<double>("arena_origin_map_y_m", 1.35);
+    declare_parameter<double>("arena_origin_map_yaw_deg", -90.0);
     declare_parameter<double>("home_x_dm", 13.5);
     declare_parameter<double>("home_y_dm", 2.5);
     declare_parameter<double>("arrival_tol_dm", 1.2);
+    declare_parameter<double>("district_match_tol_dm", 2.0);
     declare_parameter<double>("aim_tol_deg", 8.0);
     declare_parameter<double>("laser_on_s", 2.1);
     declare_parameter<double>("grid_dm", 1.0);
@@ -84,6 +85,8 @@ public:
       get_parameter("home_x_dm").as_double(),
       get_parameter("home_y_dm").as_double()};
     arrival_tol_dm_ = get_parameter("arrival_tol_dm").as_double();
+    district_match_tol_dm_ =
+      get_parameter("district_match_tol_dm").as_double();
     aim_tol_rad_ = get_parameter("aim_tol_deg").as_double() * M_PI / 180.0;
     laser_on_s_ = get_parameter("laser_on_s").as_double();
     grid_dm_ = get_parameter("grid_dm").as_double();
@@ -176,6 +179,7 @@ private:
       throw std::invalid_argument("home position must be inside the arena");
     }
     if (!std::isfinite(arrival_tol_dm_) || arrival_tol_dm_ <= 0.0 ||
+      !std::isfinite(district_match_tol_dm_) || district_match_tol_dm_ < 0.0 ||
       !std::isfinite(aim_tol_rad_) || aim_tol_rad_ <= 0.0 ||
       !std::isfinite(laser_on_s_) || laser_on_s_ <= 0.0 ||
       !std::isfinite(grid_dm_) || grid_dm_ <= 0.0 ||
@@ -381,8 +385,10 @@ private:
   size_t district_for_fire(const Point & fire) const
   {
     for (size_t index = 0; index + 3 < obstacles_.size(); index += 4) {
-      if (fire.x >= obstacles_[index] && fire.x <= obstacles_[index + 2] &&
-        fire.y >= obstacles_[index + 1] && fire.y <= obstacles_[index + 3])
+      if (fire.x >= obstacles_[index] - district_match_tol_dm_ &&
+        fire.x <= obstacles_[index + 2] + district_match_tol_dm_ &&
+        fire.y >= obstacles_[index + 1] - district_match_tol_dm_ &&
+        fire.y <= obstacles_[index + 3] + district_match_tol_dm_)
       {
         return index / 4;
       }
@@ -836,10 +842,11 @@ private:
 
   State state_{State::IDLE};
   static constexpr size_t kInvalidDistrict = std::numeric_limits<size_t>::max();
-  double origin_x_m_{0.0};
-  double origin_y_m_{0.0};
-  double origin_yaw_rad_{0.0};
+  double origin_x_m_{-0.25};
+  double origin_y_m_{1.35};
+  double origin_yaw_rad_{-90.0 * M_PI / 180.0};
   double arrival_tol_dm_{1.2};
+  double district_match_tol_dm_{2.0};
   double aim_tol_rad_{8.0 * M_PI / 180.0};
   double laser_on_s_{2.1};
   double grid_dm_{1.0};

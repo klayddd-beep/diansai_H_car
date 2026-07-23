@@ -20,6 +20,8 @@ fire_event_bridge:
   ros__parameters:
     fire_udp_port: 8889
     reply_port: 8890
+    # Used for status replies until the first fire packet teaches us the sender address.
+    drone_ip: "192.168.10.197"
     # Reset duplicate filtering after a sender restart/stream interruption.
     seq_reset_timeout_s: 3.0
     final_status_redundancy: 3
@@ -44,11 +46,13 @@ fire_link_bridge:
 
 fire_mission_manager:
   ros__parameters:
-    # Calibration: arena(0,0) expressed in map coordinates. Measure before running.
-    arena_origin_map_x_m: 0.0
-    arena_origin_map_y_m: 0.0
-    arena_origin_map_yaw_deg: 0.0
+    # Calibration: arena(0,0) expressed in map coordinates.
+    arena_origin_map_x_m: -0.25
+    arena_origin_map_y_m: 1.35
+    arena_origin_map_yaw_deg: -90.0
     arrival_tol_dm: 1.2
+    # Accept fire coordinates slightly outside a district due to origin calibration residuals.
+    district_match_tol_dm: 2.0
     # The car must face the fire within this tolerance before the laser starts.
     aim_tol_deg: 8.0
     laser_on_s: 2.1

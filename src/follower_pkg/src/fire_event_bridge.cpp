@@ -33,11 +33,16 @@ public:
   : Node("fire_event_bridge")
   {
     declare_parameter<int>("fire_udp_port", 8889); declare_parameter<int>("reply_port", 8890);
+    declare_parameter<std::string>("drone_ip", "192.168.10.197");
     declare_parameter<double>("seq_reset_timeout_s", 3.0);
     declare_parameter<int>("final_status_redundancy", 3);
     declare_parameter<int>("final_status_interval_ms", 50);
     port_ = get_parameter("fire_udp_port").as_int();
     reply_port_ = get_parameter("reply_port").as_int();
+    const auto drone_ip = get_parameter("drone_ip").as_string();
+    if (::inet_pton(AF_INET, drone_ip.c_str(), &fallback_sender_) != 1) {
+      throw std::runtime_error("invalid drone_ip: " + drone_ip);
+    }
     seq_reset_timeout_s_ = get_parameter("seq_reset_timeout_s").as_double();
     final_status_redundancy_ = get_parameter("final_status_redundancy").as_int();
     final_status_interval_ms_ = get_parameter("final_status_interval_ms").as_int();
@@ -97,12 +102,9 @@ private:
   }
   void reply(const std::string & text)
   {
-    if (!have_sender_) {
-      return;
-    }
     sockaddr_in to{};
     to.sin_family = AF_INET;
-    to.sin_addr = sender_;
+    to.sin_addr = have_sender_ ? sender_ : fallback_sender_;
     to.sin_port = htons(reply_port_);
     const bool terminal = text == "done" || text.rfind("failed:", 0) == 0;
     const int copies = terminal ? final_status_redundancy_ : 1;
@@ -123,7 +125,8 @@ private:
   int fd_{-1}, port_{8889}, reply_port_{8890}; uint16_t last_seq_{0};
   double seq_reset_timeout_s_{3.0};
   int final_status_redundancy_{3}, final_status_interval_ms_{50};
-  bool have_seq_{false}, have_sender_{false}; in_addr sender_{};
+  bool have_seq_{false}, have_sender_{false};
+  in_addr sender_{}, fallback_sender_{};
   std::chrono::steady_clock::time_point last_packet_time_{};
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr event_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr status_sub_;
