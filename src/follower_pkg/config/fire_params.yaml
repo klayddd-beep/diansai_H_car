@@ -97,9 +97,13 @@ fire_vision:
     rotate_cw_deg: 90
     flip_horizontal: false
     flip_vertical: false
-    # Calibrate these ratios to the pixel hit by the car laser.
-    aim_x_ratio: 0.5
-    aim_y_ratio: 0.5
+    # Laser spot calibration on the oriented 480x640 image.  With the camera
+    # lens about 11 cm above the ground, the beam hits the ground about 23 cm
+    # ahead of the lens.  The unobstructed white-table calibration measured
+    # the median spot center at (238.03, 282.67) px, so
+    # visual alignment must place the fire here instead of at image center.
+    aim_x_ratio: 0.4959
+    aim_y_ratio: 0.4417
     roi: [0.08, 0.05, 0.92, 0.95]
     # Dual HSV red bands plus BGR red-dominance checks work for both printed
     # red targets and illuminated red LEDs. Tune on the competition field.
