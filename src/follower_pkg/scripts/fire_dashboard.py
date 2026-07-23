@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from std_msgs.msg import Empty, Float32MultiArray, String
 
 
@@ -38,14 +39,6 @@ CYAN = (41, 202, 230)
 GREEN = (55, 210, 126)
 AMBER = (255, 190, 60)
 RED = (255, 82, 72)
-DEFAULT_OBSTACLES = [
-    6.0, 24.0, 18.0, 35.0,
-    23.0, 25.0, 31.0, 35.0,
-    37.0, 25.0, 45.0, 35.0,
-    6.0, 7.0, 15.0, 20.0,
-    20.0, 7.0, 32.0, 20.0,
-    37.0, 3.0, 45.0, 20.0,
-]
 
 
 class FireDashboard(Node):
@@ -57,9 +50,13 @@ class FireDashboard(Node):
         self.declare_parameter("window_height", 720)
         self.declare_parameter("field_width_dm", 48.0)
         self.declare_parameter("field_height_dm", 40.0)
+        self.declare_parameter(
+            "takeoff_zone_dm", Parameter.Type.DOUBLE_ARRAY)
+        self.declare_parameter(
+            "parking_zone_dm", Parameter.Type.DOUBLE_ARRAY)
         self.declare_parameter("home_x_dm", 13.5)
         self.declare_parameter("home_y_dm", 2.5)
-        self.declare_parameter("obstacles_dm", DEFAULT_OBSTACLES)
+        self.declare_parameter("obstacles_dm", Parameter.Type.DOUBLE_ARRAY)
         self.declare_parameter("history_limit", 20000)
         self.declare_parameter("link_timeout_s", 3.0)
 
@@ -76,6 +73,8 @@ class FireDashboard(Node):
             float(self.get_parameter("home_x_dm").value),
             float(self.get_parameter("home_y_dm").value),
         )
+        self.takeoff_zone = self._read_zone_parameter("takeoff_zone_dm")
+        self.parking_zone = self._read_zone_parameter("parking_zone_dm")
         flat_obstacles = list(self.get_parameter("obstacles_dm").value)
         if len(flat_obstacles) % 4 != 0:
             raise ValueError(
@@ -111,6 +110,7 @@ class FireDashboard(Node):
         self.start_feedback_until = 0.0
         self.reset_feedback_until = 0.0
         self.start_cooldown_s = 2.0
+        self.next_screen_size_check = 0.0
         self.create_subscription(
             Float32MultiArray, "/drone_telemetry", self.on_telemetry, 10)
         self.create_subscription(
@@ -123,12 +123,7 @@ class FireDashboard(Node):
 
         if not self.headless:
             if self.fullscreen:
-                screen_size = self._detect_screen_size()
-                if screen_size is not None:
-                    self.width, self.height = screen_size
-                    self.get_logger().info(
-                        f"全屏画布尺寸: {self.width}x{self.height}")
-                else:
+                if not self._refresh_fullscreen_size(force=True):
                     self.get_logger().warning(
                         "无法通过 XRandR 获取屏幕尺寸，使用配置的画布尺寸 "
                         f"{self.width}x{self.height}")
@@ -150,6 +145,14 @@ class FireDashboard(Node):
                 cv2.resizeWindow(WINDOW_NAME, self.width, self.height)
             cv2.setMouseCallback(WINDOW_NAME, self.on_mouse)
 
+    def _read_zone_parameter(self, name):
+        values = tuple(float(value) for value in self.get_parameter(name).value)
+        if (len(values) != 4 or not all(math.isfinite(value) for value in values)
+                or values[0] >= values[2] or values[1] >= values[3]):
+            raise ValueError(
+                f"{name} must be a finite xmin,ymin,xmax,ymax rectangle")
+        return values
+
     @staticmethod
     def _screen_size_from_xrandr(output):
         match = re.search(r"\bcurrent\s+(\d+)\s+x\s+(\d+)\b", output)
@@ -170,6 +173,27 @@ class FireDashboard(Node):
         if result.returncode != 0:
             return None
         return self._screen_size_from_xrandr(result.stdout)
+
+    def _refresh_fullscreen_size(self, force=False):
+        if self.headless or not self.fullscreen:
+            return False
+        now = time.monotonic()
+        if not force and now < self.next_screen_size_check:
+            return False
+        self.next_screen_size_check = now + 1.0
+        screen_size = self._detect_screen_size()
+        if screen_size is None:
+            return False
+        if screen_size != (self.width, self.height):
+            previous = (self.width, self.height)
+            self.width, self.height = screen_size
+            self.get_logger().info(
+                f"全屏画布尺寸: {previous[0]}x{previous[1]} -> "
+                f"{self.width}x{self.height}")
+        elif force:
+            self.get_logger().info(
+                f"全屏画布尺寸: {self.width}x{self.height}")
+        return True
 
     @staticmethod
     def _find_cjk_font():
@@ -306,8 +330,10 @@ class FireDashboard(Node):
                        (upper_left[1] + lower_right[1] - label_size) / 2),
                       label_size, (197, 207, 208))
 
-        takeoff_upper_left = self.field_to_screen((0, 7), arena)
-        takeoff_lower_right = self.field_to_screen((11, 0), arena)
+        takeoff_upper_left = self.field_to_screen(
+            (self.takeoff_zone[0], self.takeoff_zone[3]), arena)
+        takeoff_lower_right = self.field_to_screen(
+            (self.takeoff_zone[2], self.takeoff_zone[1]), arena)
         draw.rectangle(
             (takeoff_upper_left, takeoff_lower_right), fill=(16, 31, 37),
             outline=(73, 111, 122), width=2)
@@ -315,6 +341,14 @@ class FireDashboard(Node):
             draw, "起降区",
             (takeoff_upper_left[0] + 5, takeoff_upper_left[1] + 3),
             height * 0.025, TEXT_MUTED)
+
+        parking_upper_left = self.field_to_screen(
+            (self.parking_zone[0], self.parking_zone[3]), arena)
+        parking_lower_right = self.field_to_screen(
+            (self.parking_zone[2], self.parking_zone[1]), arena)
+        draw.rectangle(
+            (parking_upper_left, parking_lower_right), fill=(102, 34, 32),
+            outline=(188, 68, 61), width=2)
 
         home_px = self.field_to_screen(self.home, arena)
         radius = max(7, width // 90)
@@ -572,6 +606,11 @@ class FireDashboard(Node):
             cursor_x += self.text_width(draw, label, subtitle_size) + 20
 
     def render(self):
+        # XFCE may apply the saved HDMI mode after desktop autostart has
+        # already begun.  Follow later XRandR changes so a temporary boot
+        # resolution cannot leave a permanently undersized, white-bordered
+        # frame.
+        self._refresh_fullscreen_size()
         # In the Qt5 backend getWindowImageRect() reports the centered image
         # viewport, not the native full-screen window.  Reading it in
         # full-screen mode would shrink the next frame and recreate the white
@@ -616,6 +655,11 @@ class FireDashboard(Node):
             self.trigger_start()
         if key in (ord("r"), ord("R")):
             self.trigger_reset()
+        # Xfwm temporarily unmaps full-screen windows while applying a new
+        # display mode.  Treating that transition as a close event makes the
+        # autostart dashboard exit just as HDMI reaches its final resolution.
+        if self.fullscreen:
+            return True
         return cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) >= 1
 
 

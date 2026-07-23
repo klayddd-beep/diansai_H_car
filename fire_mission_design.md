@@ -24,9 +24,9 @@ fire_mission_manager → /laser_command → laser_gpio_driver → 激光笔 GPIO
 
 ## 场地、规划与安全
 
-`fire_params.yaml` 使用题目场地坐标：原点在左下角，单位 dm，大小为 48×40。`arena_origin_map_*` 是场地坐标和 Cartographer `map` 的标定变换。`obstacles_dm` 是街区矩形 `[xmin,ymin,xmax,ymax,...]`；规划时再膨胀 `safety_margin_dm`，防止车轮压街区边界。
+`fire_params.yaml` 使用题目场地坐标：原点在左下角，单位 dm，大小为 48×40。文件顶部的共享参数区是车端唯一几何数据源，任务管理器和仪表盘读取同一份 `obstacles_dm`。`arena_origin_map_*` 是场地坐标和 Cartographer `map` 的标定变换；规划时再膨胀 `safety_margin_dm`，防止车轮压街区边界。
 
-任务管理器收到火点后，在火点四周寻找 4 dm 的可达照射位，用 1 dm 栅格 BFS 绕开膨胀后的街区；到位并将车头对准火源后，激光照射 2.1 秒，再规划回红色出发区域。TF 丢失、目标不可达或返航不可达会立即发送激光 `OFF`、停止任务，并在定位仍可用时向控制器发送当前位置保持目标。照射朝向容差由 `aim_tol_deg` 配置，默认 8°。
+任务管理器收到火点后，先用六个街区矩形判断火点所属街区，再读取该街区唯一的固定下方停车点 `district_stop_points_dm`，用 1 dm 栅格 BFS 绕开膨胀后的街区；到位并将车头对准实际火点后，激光照射 2.1 秒，再规划回红色出发区域。火点不在任何街区、TF 丢失、目标不可达或返航不可达会立即发送激光 `OFF`、停止任务，并在定位仍可用时向控制器发送当前位置保持目标。照射朝向容差由 `aim_tol_deg` 配置，默认 8°。
 
 ## 已实现
 
@@ -43,4 +43,4 @@ fire_mission_manager → /laser_command → laser_gpio_driver → 激光笔 GPIO
 - 用实车验证控制点偏移、速度/角速度、到点容差及 1.5 dm 障碍安全余量，确认任何车轮都不压线。
 - 确认无人机端 UDP 包格式、IP、端口与状态回包解析；必要时增加消息校验和重传策略。
 - 激光笔 GPIO 接线、有效电平和实际输出针脚尚未确定。确认后以 `libgpiod` 替换 `laser_gpio_driver` 中标注的 mock 分支，并验证连续照射约 2 秒可可靠控制模拟火源。
-- 当前路径规划以街区外的照射位为目标；若火点在街区深处而四个候选点都不可达，需要按实测扩展候选角度和距离。
+- 六个 `district_stop_points_dm` 当前仍是按图估算的街区下方停车点，必须结合车身尺寸、激光有效距离和真实场地逐点测量。

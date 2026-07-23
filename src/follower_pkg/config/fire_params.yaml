@@ -1,3 +1,21 @@
+"/**":
+  ros__parameters:
+    # Authoritative arena geometry shared by every car-side node.
+    # Coordinates are [xmin, ymin, xmax, ymax] in arena dm.
+    field_width_dm: 48.0
+    field_height_dm: 40.0
+    takeoff_zone_dm: [0.0, 0.0, 7.0, 7.0]
+    parking_zone_dm: [11.0, 0.0, 16.0, 5.0]
+    home_x_dm: 13.5
+    home_y_dm: 2.5
+    # Figure-derived bounding boxes. Verify them against the physical field.
+    obstacles_dm: [6.0, 26.0, 17.0, 35.0,
+                   23.0, 26.0, 31.0, 35.0,
+                   37.0, 26.0, 45.0, 35.0,
+                   6.0, 11.0, 14.0, 20.0,
+                   20.0, 11.0, 31.0, 20.0,
+                   37.0,  5.0, 45.0, 20.0]
+
 fire_event_bridge:
   ros__parameters:
     fire_udp_port: 8889
@@ -30,9 +48,6 @@ fire_mission_manager:
     arena_origin_map_x_m: 0.0
     arena_origin_map_y_m: 0.0
     arena_origin_map_yaw_deg: 0.0
-    home_x_dm: 13.5
-    home_y_dm: 2.5
-    standoff_dm: 4.0
     arrival_tol_dm: 1.2
     # The car must face the fire within this tolerance before the laser starts.
     aim_tol_deg: 8.0
@@ -45,14 +60,14 @@ fire_mission_manager:
     tf_max_age_s: 0.5
     # A pose up to 3 dm beyond a boundary is warned about but remains usable.
     outside_arena_margin_dm: 3.0
-    # [xmin, ymin, xmax, ymax, ...], arena dm. These are provisional estimates
-    # from the contest figure and MUST be measured against the physical field.
-    obstacles_dm: [6.0, 24.0, 18.0, 35.0,
-                   23.0, 25.0, 31.0, 35.0,
-                   37.0, 25.0, 45.0, 35.0,
-                   6.0,  7.0, 15.0, 20.0,
-                   20.0,  7.0, 32.0, 20.0,
-                   37.0,  3.0, 45.0, 20.0]
+    # One fixed stop point [x,y] below each obstacle, in the same order.
+    # These provisional values must be measured and adjusted on the real field.
+    district_stop_points_dm: [12.0, 22.0,
+                              27.0, 23.0,
+                              41.0, 23.0,
+                              10.5,  5.0,
+                              26.0,  5.0,
+                              41.0,  1.0]
 
 fire_dashboard:
   ros__parameters:
@@ -60,18 +75,6 @@ fire_dashboard:
     headless: false
     window_width: 1280
     window_height: 720
-    field_width_dm: 48.0
-    field_height_dm: 40.0
-    home_x_dm: 13.5
-    home_y_dm: 2.5
-    # Must remain identical to fire_mission_manager.obstacles_dm. ROS 2 Humble's
-    # parameter parser does not support YAML aliases, so the array is explicit.
-    obstacles_dm: [6.0, 24.0, 18.0, 35.0,
-                   23.0, 25.0, 31.0, 35.0,
-                   37.0, 25.0, 45.0, 35.0,
-                   6.0,  7.0, 15.0, 20.0,
-                   20.0,  7.0, 32.0, 20.0,
-                   37.0,  3.0, 45.0, 20.0]
     history_limit: 20000
     link_timeout_s: 3.0
 

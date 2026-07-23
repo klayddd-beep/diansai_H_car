@@ -1,6 +1,7 @@
 // Fire mission state machine. Arena coordinates are dm; TF/control coordinates are m.
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -45,7 +46,6 @@ public:
     declare_parameter<double>("arena_origin_map_yaw_deg", 0.0);
     declare_parameter<double>("home_x_dm", 13.5);
     declare_parameter<double>("home_y_dm", 2.5);
-    declare_parameter<double>("standoff_dm", 4.0);
     declare_parameter<double>("arrival_tol_dm", 1.2);
     declare_parameter<double>("aim_tol_deg", 8.0);
     declare_parameter<double>("laser_on_s", 2.1);
@@ -56,6 +56,8 @@ public:
     declare_parameter<double>("outside_arena_margin_dm", 3.0);
     declare_parameter<std::vector<double>>(
       "obstacles_dm", std::vector<double>{});
+    declare_parameter<std::vector<double>>(
+      "district_stop_points_dm", std::vector<double>{});
 
     origin_x_m_ = get_parameter("arena_origin_map_x_m").as_double();
     origin_y_m_ = get_parameter("arena_origin_map_y_m").as_double();
@@ -64,7 +66,6 @@ public:
     home_ = {
       get_parameter("home_x_dm").as_double(),
       get_parameter("home_y_dm").as_double()};
-    standoff_dm_ = get_parameter("standoff_dm").as_double();
     arrival_tol_dm_ = get_parameter("arrival_tol_dm").as_double();
     aim_tol_rad_ = get_parameter("aim_tol_deg").as_double() * M_PI / 180.0;
     laser_on_s_ = get_parameter("laser_on_s").as_double();
@@ -76,6 +77,8 @@ public:
     outside_arena_margin_dm_ =
       get_parameter("outside_arena_margin_dm").as_double();
     obstacles_ = get_parameter("obstacles_dm").as_double_array();
+    district_stop_points_ =
+      get_parameter("district_stop_points_dm").as_double_array();
     validate_parameters();
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
@@ -122,8 +125,7 @@ private:
     if (!inside_arena(home_)) {
       throw std::invalid_argument("home position must be inside the arena");
     }
-    if (!std::isfinite(standoff_dm_) || standoff_dm_ <= 0.0 ||
-      !std::isfinite(arrival_tol_dm_) || arrival_tol_dm_ <= 0.0 ||
+    if (!std::isfinite(arrival_tol_dm_) || arrival_tol_dm_ <= 0.0 ||
       !std::isfinite(aim_tol_rad_) || aim_tol_rad_ <= 0.0 ||
       !std::isfinite(laser_on_s_) || laser_on_s_ <= 0.0 ||
       !std::isfinite(grid_dm_) || grid_dm_ <= 0.0 ||
@@ -148,6 +150,23 @@ private:
       {
         throw std::invalid_argument(
                 "each obstacle must satisfy xmin<xmax and ymin<ymax");
+      }
+    }
+    if (district_stop_points_.size() != obstacles_.size() / 2 ||
+      !std::all_of(
+        district_stop_points_.begin(), district_stop_points_.end(),
+        [](double value) {return std::isfinite(value);}))
+    {
+      throw std::invalid_argument(
+              "district_stop_points_dm must contain one finite x,y pair per obstacle");
+    }
+    for (size_t index = 0; index < district_stop_points_.size(); index += 2) {
+      const Point stop{
+        district_stop_points_[index],
+        district_stop_points_[index + 1]};
+      if (!inside_arena(stop) || blocked(stop.x, stop.y)) {
+        throw std::invalid_argument(
+                "each district stop point must be inside the arena and outside inflated obstacles");
       }
     }
   }
@@ -289,6 +308,25 @@ private:
     return false;
   }
 
+  size_t district_for_fire(const Point & fire) const
+  {
+    for (size_t index = 0; index + 3 < obstacles_.size(); index += 4) {
+      if (fire.x >= obstacles_[index] && fire.x <= obstacles_[index + 2] &&
+        fire.y >= obstacles_[index + 1] && fire.y <= obstacles_[index + 3])
+      {
+        return index / 4;
+      }
+    }
+    return kInvalidDistrict;
+  }
+
+  Point district_stop_point(size_t district) const
+  {
+    return {
+      district_stop_points_[district * 2],
+      district_stop_points_[district * 2 + 1]};
+  }
+
   std::vector<Point> plan(Point start, Point goal) const
   {
     const int columns = static_cast<int>(kArenaWidthDm / grid_dm_) + 1;
@@ -376,33 +414,33 @@ private:
       report("failed:invalid_fire");
       return;
     }
+    const size_t district = district_for_fire(requested_fire);
+    if (district == kInvalidDistrict) {
+      RCLCPP_WARN(
+        get_logger(), "fire point (%.2f, %.2f) is not inside any configured district",
+        requested_fire.x, requested_fire.y);
+      report("failed:fire_not_in_district");
+      return;
+    }
 
     fire_point_ = requested_fire;
+    fire_district_ = district;
     state_ = State::WAIT_POSE;
     tick();
   }
 
   void start_mission(const Point & current)
   {
-    const std::vector<Point> candidates = {
-      {fire_point_.x - standoff_dm_, fire_point_.y},
-      {fire_point_.x + standoff_dm_, fire_point_.y},
-      {fire_point_.x, fire_point_.y - standoff_dm_},
-      {fire_point_.x, fire_point_.y + standoff_dm_}};
-    path_.clear();
+    const Point stop = district_stop_point(fire_district_);
     const Point planning_start = clamp_to_arena(current);
-    for (const auto & candidate : candidates) {
-      const auto candidate_path = plan(planning_start, candidate);
-      if (!candidate_path.empty() &&
-        (path_.empty() || candidate_path.size() < path_.size()))
-      {
-        path_ = candidate_path;
-      }
-    }
+    path_ = plan(planning_start, stop);
     if (path_.empty()) {
       fail("unreachable");
       return;
     }
+    RCLCPP_INFO(
+      get_logger(), "fire belongs to district %zu; driving to fixed stop (%.2f, %.2f) dm",
+      fire_district_ + 1, stop.x, stop.y);
     waypoint_index_ = 0;
     state_ = State::DRIVE_FIRE;
     report("enroute");
@@ -548,10 +586,10 @@ private:
   }
 
   State state_{State::IDLE};
+  static constexpr size_t kInvalidDistrict = std::numeric_limits<size_t>::max();
   double origin_x_m_{0.0};
   double origin_y_m_{0.0};
   double origin_yaw_rad_{0.0};
-  double standoff_dm_{4.0};
   double arrival_tol_dm_{1.2};
   double aim_tol_rad_{8.0 * M_PI / 180.0};
   double laser_on_s_{2.1};
@@ -562,7 +600,9 @@ private:
   double outside_arena_margin_dm_{3.0};
   Point home_{};
   Point fire_point_{};
+  size_t fire_district_{kInvalidDistrict};
   std::vector<double> obstacles_;
+  std::vector<double> district_stop_points_;
   std::vector<Point> path_;
   size_t waypoint_index_{0};
   std::string laser_state_;

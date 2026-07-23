@@ -90,6 +90,40 @@ if [[ ! -S "/tmp/.X11-unix/X${display_number}" ]]; then
   echo "X11 display was not ready after 60s (DISPLAY=$DISPLAY)" >&2
   exit 1
 fi
+
+# XFCE autostart can run while X11 is still using its 1024x768 fallback.
+# Wait for a usable geometry to remain stable before the dashboard queries
+# XRandR. The dashboard also tracks later mode changes (for slow HDMI links).
+stable_geometry=
+stable_geometry_count=0
+for _ in {1..30}; do
+  xrandr_header=$(xrandr --current 2>/dev/null | head -n 1 || true)
+  if [[ "$xrandr_header" =~ current[[:space:]]+([0-9]+)[[:space:]]+x[[:space:]]+([0-9]+) ]]; then
+    screen_width="${BASH_REMATCH[1]}"
+    screen_height="${BASH_REMATCH[2]}"
+    geometry="${screen_width}x${screen_height}"
+    if (( screen_width >= 1280 && screen_height >= 720 )); then
+      if [[ "$geometry" == "$stable_geometry" ]]; then
+        ((stable_geometry_count += 1))
+      else
+        stable_geometry="$geometry"
+        stable_geometry_count=1
+      fi
+      if (( stable_geometry_count >= 3 )); then
+        echo "X11 display geometry is stable: $geometry"
+        break
+      fi
+    else
+      stable_geometry=
+      stable_geometry_count=0
+    fi
+  fi
+  sleep 1
+done
+if (( stable_geometry_count < 3 )); then
+  echo "WARNING: X11 display geometry did not stabilize; dashboard will track changes at runtime" >&2
+fi
+
 if [[ ! -r "$workspace_root/install/setup.bash" ]]; then
   echo "workspace has not been built: $workspace_root/install/setup.bash" >&2
   exit 1
