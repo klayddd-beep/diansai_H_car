@@ -1,0 +1,9 @@
+std_msgs/Header header
+bool detected
+float32 center_x_px
+float32 center_y_px
+float32 error_x_norm
+float32 error_y_norm
+float32 area_ratio
+uint32 image_width
+uint32 image_height

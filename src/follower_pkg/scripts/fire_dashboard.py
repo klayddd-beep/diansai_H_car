@@ -9,10 +9,12 @@ import time
 
 import cv2
 import numpy as np
+from cv_bridge import CvBridge, CvBridgeError
 from PIL import Image, ImageDraw, ImageFont
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from sensor_msgs.msg import Image as RosImage
 from std_msgs.msg import Empty, Float32MultiArray, String
 
 
@@ -59,6 +61,7 @@ class FireDashboard(Node):
         self.declare_parameter("obstacles_dm", Parameter.Type.DOUBLE_ARRAY)
         self.declare_parameter("history_limit", 20000)
         self.declare_parameter("link_timeout_s", 3.0)
+        self.declare_parameter("camera_timeout_s", 1.0)
 
         self.fullscreen = bool(self.get_parameter("fullscreen").value)
         self.headless = bool(self.get_parameter("headless").value)
@@ -93,6 +96,8 @@ class FireDashboard(Node):
             1, int(self.get_parameter("history_limit").value))
         self.link_timeout = max(
             0.1, float(self.get_parameter("link_timeout_s").value))
+        self.camera_timeout = max(
+            0.1, float(self.get_parameter("camera_timeout_s").value))
         self.font_path = self._find_cjk_font()
         if self.font_path is None:
             self.get_logger().warning(
@@ -105,8 +110,16 @@ class FireDashboard(Node):
         self.track = []
         self.fire_point = None
         self.car_status = "ready"
+        self.bridge = CvBridge()
+        self.camera_frame = None
+        self.last_camera_time = None
         self.start_button_rect = None
         self.reset_button_rect = None
+        self.map_tab_rect = None
+        self.camera_tab_rect = None
+        self.close_button_rect = None
+        self.active_tab = "map"
+        self.exit_requested = False
         self.start_feedback_until = 0.0
         self.reset_feedback_until = 0.0
         self.start_cooldown_s = 2.0
@@ -117,6 +130,8 @@ class FireDashboard(Node):
             Float32MultiArray, "/fire_event", self.on_fire, 10)
         self.create_subscription(
             String, "/fire_mission_status", self.on_status, 10)
+        self.create_subscription(
+            RosImage, "/fire_vision/debug_image", self.on_camera_image, 2)
         self.start_publisher = self.create_publisher(Empty, "/drone_start", 10)
         self.reset_publisher = self.create_publisher(
             Empty, "/fire_mission_reset", 10)
@@ -243,6 +258,15 @@ class FireDashboard(Node):
 
     def on_status(self, msg):
         self.car_status = msg.data
+
+    def on_camera_image(self, msg):
+        try:
+            self.camera_frame = self.bridge.imgmsg_to_cv2(
+                msg, desired_encoding="bgr8").copy()
+        except (CvBridgeError, TypeError, ValueError, cv2.error) as error:
+            self.get_logger().warning(f"摄像头图像转换失败: {error}")
+            return
+        self.last_camera_time = time.monotonic()
 
     def field_to_screen(self, point, arena):
         left, top, width, height = arena
@@ -531,6 +555,21 @@ class FireDashboard(Node):
     def on_mouse(self, event, x, y, _flags, _param):
         if event != cv2.EVENT_LBUTTONDOWN:
             return
+        if self.close_button_rect is not None:
+            left, top, right, bottom = self.close_button_rect
+            if left <= x <= right and top <= y <= bottom:
+                self.exit_requested = True
+                return
+        if self.map_tab_rect is not None:
+            left, top, right, bottom = self.map_tab_rect
+            if left <= x <= right and top <= y <= bottom:
+                self.active_tab = "map"
+                return
+        if self.camera_tab_rect is not None:
+            left, top, right, bottom = self.camera_tab_rect
+            if left <= x <= right and top <= y <= bottom:
+                self.active_tab = "camera"
+                return
         if self.start_button_rect is not None:
             left, top, right, bottom = self.start_button_rect
             if left <= x <= right and top <= y <= bottom:
@@ -558,11 +597,124 @@ class FireDashboard(Node):
             draw, "CAR  ·  实时任务态势",
             (icon_x + icon_r + 13, margin + title_size * 1.18),
             max(12, int(title_size * 0.5)), TEXT_MUTED)
-        hint = "ESC 退出"
+
+        tab_h = max(36, int(header_h * 0.72))
+        tab_w = max(104, int(tab_h * 2.8))
+        tabs_left = round((self.width - tab_w * 2) / 2)
+        tabs_top = round(margin + (header_h - tab_h) / 2)
+        tabs_right = tabs_left + tab_w * 2
+        draw.rounded_rectangle(
+            (tabs_left, tabs_top, tabs_right, tabs_top + tab_h),
+            radius=tab_h // 2, fill=SURFACE, outline=BORDER, width=1)
+        self.map_tab_rect = (
+            tabs_left, tabs_top, tabs_left + tab_w, tabs_top + tab_h)
+        self.camera_tab_rect = (
+            tabs_left + tab_w, tabs_top, tabs_right, tabs_top + tab_h)
+        tab_size = max(13, int(tab_h * 0.38))
+        for label, bounds, selected in (
+                ("任务态势", self.map_tab_rect, self.active_tab == "map"),
+                ("摄像头", self.camera_tab_rect,
+                 self.active_tab == "camera")):
+            if selected:
+                draw.rounded_rectangle(
+                    bounds, radius=tab_h // 2,
+                    fill=(21, 91, 107), outline=CYAN, width=2)
+            label_w = self.text_width(draw, label, tab_size)
+            self.text(
+                draw, label,
+                (bounds[0] + (tab_w - label_w) / 2,
+                 bounds[1] + (tab_h - tab_size) * 0.36),
+                tab_size, TEXT if selected else TEXT_MUTED)
+
+        button_size = max(36, int(header_h * 0.72))
+        button_top = round(margin + (header_h - button_size) / 2)
+        button_right = self.width - margin
+        button_left = button_right - button_size
+        self.close_button_rect = (
+            button_left, button_top, button_right, button_top + button_size)
+        draw.rounded_rectangle(
+            self.close_button_rect, radius=max(8, button_size // 4),
+            fill=SURFACE_ALT, outline=BORDER, width=1)
+        cross_margin = max(10, int(button_size * 0.29))
+        draw.line(
+            (button_left + cross_margin, button_top + cross_margin,
+             button_right - cross_margin,
+             button_top + button_size - cross_margin),
+            fill=TEXT, width=max(2, button_size // 14))
+        draw.line(
+            (button_right - cross_margin, button_top + cross_margin,
+             button_left + cross_margin,
+             button_top + button_size - cross_margin),
+            fill=TEXT, width=max(2, button_size // 14))
+
+        hint = "ESC"
         hint_size = max(12, int(title_size * 0.52))
         hint_w = self.text_width(draw, hint, hint_size)
-        self.text(draw, hint, (self.width - margin - hint_w,
-                  margin + (header_h - hint_size) / 2), hint_size, TEXT_MUTED)
+        self.text(
+            draw, hint,
+            (button_left - max(12, margin) - hint_w,
+             margin + (header_h - hint_size) / 2),
+            hint_size, TEXT_MUTED)
+
+    def draw_camera_card(self, image, draw, card):
+        left, top, width, height = card
+        right, bottom = left + width, top + height
+        self.rounded_card(draw, (left, top, right, bottom))
+        padding = max(12, int(min(width, height) * 0.035))
+        title_size = max(17, min(26, int(min(width, height) * 0.055)))
+        self.text(
+            draw, "摄像头画面", (left + padding, top + padding),
+            title_size, TEXT)
+
+        elapsed = (
+            math.inf if self.last_camera_time is None
+            else time.monotonic() - self.last_camera_time)
+        if elapsed <= self.camera_timeout:
+            status_text, status_color = "实时", GREEN
+        elif self.camera_frame is None:
+            status_text, status_color = "等待", AMBER
+        else:
+            status_text, status_color = "已断开", RED
+        status_size = max(12, int(title_size * 0.62))
+        self.draw_badge(
+            draw, status_text, right - padding, top + padding,
+            status_color, status_size)
+
+        viewport_top = top + padding + max(
+            title_size * 1.9, status_size * 2.0)
+        viewport = (
+            round(left + padding), round(viewport_top),
+            round(right - padding), round(bottom - padding))
+        viewport_w = max(1, viewport[2] - viewport[0])
+        viewport_h = max(1, viewport[3] - viewport[1])
+        draw.rounded_rectangle(
+            viewport, radius=max(8, padding // 2),
+            fill=(5, 9, 12), outline=(43, 58, 68), width=1)
+
+        if self.camera_frame is None:
+            prompt = "等待摄像头画面"
+            prompt_size = max(13, int(title_size * 0.72))
+            prompt_w = self.text_width(draw, prompt, prompt_size)
+            self.text(
+                draw, prompt,
+                (viewport[0] + (viewport_w - prompt_w) / 2,
+                 viewport[1] + (viewport_h - prompt_size) / 2),
+                prompt_size, TEXT_MUTED)
+            return
+
+        rgb_frame = cv2.cvtColor(self.camera_frame, cv2.COLOR_BGR2RGB)
+        preview = Image.fromarray(rgb_frame)
+        scale = min(
+            viewport_w / preview.width, viewport_h / preview.height)
+        preview_size = (
+            max(1, round(preview.width * scale)),
+            max(1, round(preview.height * scale)))
+        resampling = getattr(Image, "Resampling", Image)
+        preview = preview.resize(preview_size, resampling.LANCZOS)
+        preview_left = viewport[0] + (viewport_w - preview.width) // 2
+        preview_top = viewport[1] + (viewport_h - preview.height) // 2
+        image.paste(preview, (preview_left, preview_top))
+        draw.rectangle(viewport, outline=(43, 58, 68), width=1)
 
     def draw_map_card(self, draw, card):
         left, top, width, height = card
@@ -634,10 +786,13 @@ class FireDashboard(Node):
         panel_width = max(340, min(460, int(self.width * 0.345)))
         if self.width < 900:
             panel_width = max(300, int(self.width * 0.39))
-        map_width = self.width - margin * 2 - gap - panel_width
-        map_card = (margin, content_top, map_width, content_h)
-        panel = (margin + map_width + gap, content_top, panel_width, content_h)
-        self.draw_map_card(draw, map_card)
+        page_width = self.width - margin * 2 - gap - panel_width
+        page_card = (margin, content_top, page_width, content_h)
+        panel = (margin + page_width + gap, content_top, panel_width, content_h)
+        if self.active_tab == "camera":
+            self.draw_camera_card(image, draw, page_card)
+        else:
+            self.draw_map_card(draw, page_card)
         self.draw_panel(draw, panel)
         if not self.headless:
             cv2.imshow(
@@ -647,14 +802,17 @@ class FireDashboard(Node):
 
     def process_events(self):
         if self.headless:
-            return True
+            return not self.exit_requested
         key = cv2.waitKey(1) & 0xFF
-        if key == 27:
+        if key == 27 or self.exit_requested:
             return False
         if key in (13, 32):
             self.trigger_start()
         if key in (ord("r"), ord("R")):
             self.trigger_reset()
+        if key == 9:
+            self.active_tab = (
+                "camera" if self.active_tab == "map" else "map")
         # Xfwm temporarily unmaps full-screen windows while applying a new
         # display mode.  Treating that transition as a close event makes the
         # autostart dashboard exit just as HDMI reaches its final resolution.

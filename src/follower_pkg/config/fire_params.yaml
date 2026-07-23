@@ -60,6 +60,21 @@ fire_mission_manager:
     tf_max_age_s: 0.5
     # A pose up to 3 dm beyond a boundary is warned about but remains usable.
     outside_arena_margin_dm: 3.0
+    # Camera fine alignment starts only after the fixed stop and map yaw are reached.
+    vision_stable_frames: 8
+    vision_error_deadband_x: 0.06
+    vision_error_deadband_y: 0.06
+    vision_kp_v_mps: 0.08
+    vision_kp_w_rps: 0.60
+    vision_v_max_mps: 0.04
+    vision_w_max_rps: 0.20
+    vision_search_w_rps: 0.12
+    vision_search_yaw_deg: 15.0
+    vision_timeout_s: 12.0
+    vision_data_timeout_s: 0.5
+    vision_lost_grace_s: 0.3
+    vision_max_translation_dm: 2.0
+    vision_safety_lookahead_dm: 0.5
     # One fixed stop point [x,y] below each obstacle, in the same order.
     # These provisional values must be measured and adjusted on the real field.
     district_stop_points_dm: [12.0, 22.0,
@@ -69,6 +84,43 @@ fire_mission_manager:
                               26.0,  5.0,
                               41.0,  1.0]
 
+fire_vision:
+  ros__parameters:
+    # Stable by-id path for the connected 5M WDR camera. Do not silently fall
+    # back to /dev/videoN because index numbers can change after a reboot.
+    device_path: "/dev/v4l/by-id/usb-5M_WDR_Camera_5M_WDR_Camera_SN20210707-video-index0"
+    capture_width: 640
+    capture_height: 480
+    capture_fps: 30.0
+    processing_rate_hz: 15.0
+    # The current mounting is upright after rotating the raw frame clockwise 90 degrees.
+    rotate_cw_deg: 90
+    flip_horizontal: false
+    flip_vertical: false
+    # Calibrate these ratios to the pixel hit by the car laser.
+    aim_x_ratio: 0.5
+    aim_y_ratio: 0.5
+    roi: [0.08, 0.05, 0.92, 0.95]
+    # Dual HSV red bands plus BGR red-dominance checks work for both printed
+    # red targets and illuminated red LEDs. Tune on the competition field.
+    hue_low_1: 0
+    hue_high_1: 12
+    hue_low_2: 168
+    hue_high_2: 179
+    saturation_min: 70
+    value_min: 45
+    red_min: 65
+    red_over_green_min: 25
+    red_over_blue_min: 20
+    min_area_ratio: 0.0002
+    max_area_ratio: 0.20
+    morphology_open_px: 3
+    morphology_close_px: 7
+    track_memory_frames: 5
+    camera_retry_s: 1.0
+    # Keep the annotated image enabled for the dashboard's live camera view.
+    publish_debug_image: true
+
 fire_dashboard:
   ros__parameters:
     fullscreen: true
@@ -77,6 +129,7 @@ fire_dashboard:
     window_height: 720
     history_limit: 20000
     link_timeout_s: 3.0
+    camera_timeout_s: 1.0
 
 laser_gpio_driver:
   ros__parameters:

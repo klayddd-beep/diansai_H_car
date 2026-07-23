@@ -6,12 +6,18 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/FireDetection.msg"
+  "msg/VisionServoCommand.msg"
+  DEPENDENCIES std_msgs)
 
 add_executable(diff_drive_controller src/diff_drive_controller.cpp)
 ament_target_dependencies(diff_drive_controller
@@ -31,6 +37,11 @@ add_executable(fire_mission_manager src/fire_mission_manager.cpp)
 ament_target_dependencies(fire_mission_manager
   rclcpp std_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs)
 
+rosidl_get_typesupport_target(cpp_typesupport_target
+  ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(diff_drive_controller "${cpp_typesupport_target}")
+target_link_libraries(fire_mission_manager "${cpp_typesupport_target}")
+
 add_executable(laser_gpio_driver src/laser_gpio_driver.cpp)
 ament_target_dependencies(laser_gpio_driver rclcpp std_msgs)
 
@@ -45,6 +56,11 @@ install(TARGETS
 
 install(PROGRAMS
   scripts/fire_dashboard.py
+  scripts/fire_vision_node.py
+  DESTINATION lib/${PROJECT_NAME})
+
+install(FILES
+  scripts/fire_vision_core.py
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch config
@@ -52,9 +68,14 @@ install(DIRECTORY launch config
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+  ament_add_pytest_test(fire_vision_core_test
+    test/test_fire_vision_core.py
+    TIMEOUT 30)
 endif()
 
+ament_export_dependencies(rosidl_default_runtime)
 ament_package()

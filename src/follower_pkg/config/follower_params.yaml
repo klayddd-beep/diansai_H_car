@@ -10,6 +10,11 @@ diff_drive_controller:
     target_timeout_s: 1.0
     stop_burst_s: 1.0
     publish_rate_hz: 20.0
+    # Fine-alignment commands have priority over navigation. A stale active
+    # command keeps the chassis locked at zero speed until explicitly released.
+    vision_command_timeout_s: 0.3
+    vision_v_max_mps: 0.05
+    vision_w_max_rps: 0.25
     # 控制点偏移(车体系,雷达→前驱动轮轴中点):本车轴在雷达前方 6.2cm、横向 0
     ctrl_offset_x_cm: 6.2
     ctrl_offset_y_cm: 0.0

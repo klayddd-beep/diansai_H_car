@@ -1,5 +1,6 @@
 // Fire mission state machine. Arena coordinates are dm; TF/control coordinates are m.
 #include <algorithm>
+#include <cstdint>
 #include <cmath>
 #include <limits>
 #include <queue>
@@ -9,6 +10,8 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "follower_pkg/msg/fire_detection.hpp"
+#include "follower_pkg/msg/vision_servo_command.hpp"
 #include "std_msgs/msg/empty.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -54,6 +57,20 @@ public:
     declare_parameter<double>("pose_failure_timeout_s", 1.0);
     declare_parameter<double>("tf_max_age_s", 0.5);
     declare_parameter<double>("outside_arena_margin_dm", 3.0);
+    declare_parameter<int>("vision_stable_frames", 8);
+    declare_parameter<double>("vision_error_deadband_x", 0.06);
+    declare_parameter<double>("vision_error_deadband_y", 0.06);
+    declare_parameter<double>("vision_kp_v_mps", 0.08);
+    declare_parameter<double>("vision_kp_w_rps", 0.60);
+    declare_parameter<double>("vision_v_max_mps", 0.04);
+    declare_parameter<double>("vision_w_max_rps", 0.20);
+    declare_parameter<double>("vision_search_w_rps", 0.12);
+    declare_parameter<double>("vision_search_yaw_deg", 15.0);
+    declare_parameter<double>("vision_timeout_s", 12.0);
+    declare_parameter<double>("vision_data_timeout_s", 0.5);
+    declare_parameter<double>("vision_lost_grace_s", 0.3);
+    declare_parameter<double>("vision_max_translation_dm", 2.0);
+    declare_parameter<double>("vision_safety_lookahead_dm", 0.5);
     declare_parameter<std::vector<double>>(
       "obstacles_dm", std::vector<double>{});
     declare_parameter<std::vector<double>>(
@@ -76,6 +93,27 @@ public:
     tf_max_age_s_ = get_parameter("tf_max_age_s").as_double();
     outside_arena_margin_dm_ =
       get_parameter("outside_arena_margin_dm").as_double();
+    vision_stable_frames_required_ =
+      get_parameter("vision_stable_frames").as_int();
+    vision_error_deadband_x_ =
+      get_parameter("vision_error_deadband_x").as_double();
+    vision_error_deadband_y_ =
+      get_parameter("vision_error_deadband_y").as_double();
+    vision_kp_v_mps_ = get_parameter("vision_kp_v_mps").as_double();
+    vision_kp_w_rps_ = get_parameter("vision_kp_w_rps").as_double();
+    vision_v_max_mps_ = get_parameter("vision_v_max_mps").as_double();
+    vision_w_max_rps_ = get_parameter("vision_w_max_rps").as_double();
+    vision_search_w_rps_ = get_parameter("vision_search_w_rps").as_double();
+    vision_search_yaw_rad_ =
+      get_parameter("vision_search_yaw_deg").as_double() * M_PI / 180.0;
+    vision_timeout_s_ = get_parameter("vision_timeout_s").as_double();
+    vision_data_timeout_s_ =
+      get_parameter("vision_data_timeout_s").as_double();
+    vision_lost_grace_s_ = get_parameter("vision_lost_grace_s").as_double();
+    vision_max_translation_dm_ =
+      get_parameter("vision_max_translation_dm").as_double();
+    vision_safety_lookahead_dm_ =
+      get_parameter("vision_safety_lookahead_dm").as_double();
     obstacles_ = get_parameter("obstacles_dm").as_double_array();
     district_stop_points_ =
       get_parameter("district_stop_points_dm").as_double_array();
@@ -91,6 +129,9 @@ public:
       create_publisher<std_msgs::msg::String>("/laser_command", 10);
     status_publisher_ =
       create_publisher<std_msgs::msg::String>("/fire_mission_status", 10);
+    vision_servo_publisher_ =
+      create_publisher<follower_pkg::msg::VisionServoCommand>(
+      "/fire_vision/servo_command", 10);
     fire_subscription_ =
       create_subscription<std_msgs::msg::Float32MultiArray>(
       "/fire_event", 10,
@@ -106,13 +147,22 @@ public:
     reset_subscription_ = create_subscription<std_msgs::msg::Empty>(
       "/fire_mission_reset", 10,
       [this](std_msgs::msg::Empty::SharedPtr) {reset();});
+    vision_detection_subscription_ =
+      create_subscription<follower_pkg::msg::FireDetection>(
+      "/fire_vision/detection", 10,
+      [this](follower_pkg::msg::FireDetection::SharedPtr message) {
+        on_vision_detection(*message);
+      });
     timer_ = create_wall_timer(
       std::chrono::milliseconds(100), [this]() {tick();});
     report("ready");
   }
 
 private:
-  enum class State {IDLE, WAIT_POSE, DRIVE_FIRE, LASER_ON, DRIVE_HOME, SAFE_STOP};
+  enum class State
+  {
+    IDLE, WAIT_POSE, DRIVE_FIRE, VISUAL_ALIGN, LASER_ON, DRIVE_HOME, SAFE_STOP
+  };
   enum class PoseResult {OK, TF_LOST, OUTSIDE_ARENA};
 
   void validate_parameters() const
@@ -132,7 +182,27 @@ private:
       !std::isfinite(safety_margin_dm_) || safety_margin_dm_ < 0.0 ||
       !std::isfinite(pose_failure_timeout_s_) || pose_failure_timeout_s_ <= 0.0 ||
       !std::isfinite(tf_max_age_s_) || tf_max_age_s_ <= 0.0 ||
-      !std::isfinite(outside_arena_margin_dm_) || outside_arena_margin_dm_ < 0.0)
+      !std::isfinite(outside_arena_margin_dm_) || outside_arena_margin_dm_ < 0.0 ||
+      vision_stable_frames_required_ <= 0 ||
+      !std::isfinite(vision_error_deadband_x_) ||
+      vision_error_deadband_x_ <= 0.0 || vision_error_deadband_x_ >= 1.0 ||
+      !std::isfinite(vision_error_deadband_y_) ||
+      vision_error_deadband_y_ <= 0.0 || vision_error_deadband_y_ >= 1.0 ||
+      !std::isfinite(vision_kp_v_mps_) || vision_kp_v_mps_ <= 0.0 ||
+      !std::isfinite(vision_kp_w_rps_) || vision_kp_w_rps_ <= 0.0 ||
+      !std::isfinite(vision_v_max_mps_) || vision_v_max_mps_ <= 0.0 ||
+      !std::isfinite(vision_w_max_rps_) || vision_w_max_rps_ <= 0.0 ||
+      !std::isfinite(vision_search_w_rps_) || vision_search_w_rps_ <= 0.0 ||
+      !std::isfinite(vision_search_yaw_rad_) || vision_search_yaw_rad_ <= 0.0 ||
+      vision_search_yaw_rad_ >= M_PI ||
+      !std::isfinite(vision_timeout_s_) || vision_timeout_s_ <= 0.0 ||
+      !std::isfinite(vision_data_timeout_s_) || vision_data_timeout_s_ <= 0.0 ||
+      !std::isfinite(vision_lost_grace_s_) || vision_lost_grace_s_ < 0.0 ||
+      vision_lost_grace_s_ >= vision_timeout_s_ ||
+      !std::isfinite(vision_max_translation_dm_) ||
+      vision_max_translation_dm_ <= 0.0 ||
+      !std::isfinite(vision_safety_lookahead_dm_) ||
+      vision_safety_lookahead_dm_ <= 0.0)
     {
       throw std::invalid_argument("mission distances and durations are invalid");
     }
@@ -463,11 +533,185 @@ private:
     target_publisher_->publish(message);
   }
 
+  void on_vision_detection(const follower_pkg::msg::FireDetection & message)
+  {
+    if (state_ != State::VISUAL_ALIGN) {
+      return;
+    }
+    vision_detection_seen_ = true;
+    last_vision_detection_at_ = now();
+    const bool valid =
+      message.detected && message.image_width > 0 && message.image_height > 0 &&
+      std::isfinite(message.error_x_norm) &&
+      std::isfinite(message.error_y_norm) &&
+      std::isfinite(message.area_ratio) && message.area_ratio > 0.0F;
+    vision_detected_ = valid;
+    if (!valid) {
+      vision_stable_frames_ = 0;
+      return;
+    }
+
+    vision_error_x_ = message.error_x_norm;
+    vision_error_y_ = message.error_y_norm;
+    vision_ever_detected_ = true;
+    last_vision_target_at_ = last_vision_detection_at_;
+    if (std::fabs(vision_error_x_) <= vision_error_deadband_x_ &&
+      std::fabs(vision_error_y_) <= vision_error_deadband_y_)
+    {
+      ++vision_stable_frames_;
+    } else {
+      vision_stable_frames_ = 0;
+    }
+  }
+
+  void publish_vision_servo(bool active, double linear_x, double angular_z)
+  {
+    follower_pkg::msg::VisionServoCommand message;
+    message.header.stamp = now();
+    message.header.frame_id = "base_link";
+    message.active = active;
+    message.linear_x_mps = static_cast<float>(linear_x);
+    message.angular_z_rps = static_cast<float>(angular_z);
+    vision_servo_publisher_->publish(message);
+  }
+
   void publish_laser(const char * command)
   {
     std_msgs::msg::String message;
     message.data = command;
     laser_publisher_->publish(message);
+  }
+
+  void begin_laser()
+  {
+    publish_vision_servo(false, 0.0, 0.0);
+    laser_state_.clear();
+    publish_laser("ON");
+    laser_started_at_ = now();
+    state_ = State::LASER_ON;
+    report("extinguishing");
+  }
+
+  void start_visual_align(const Point & current, double yaw_map)
+  {
+    state_ = State::VISUAL_ALIGN;
+    vision_started_at_ = now();
+    last_vision_detection_at_ = vision_started_at_;
+    last_vision_target_at_ = vision_started_at_;
+    vision_entry_yaw_map_ = yaw_map;
+    vision_last_pose_ = current;
+    vision_translation_dm_ = 0.0;
+    vision_search_direction_ = 1.0;
+    vision_detection_seen_ = false;
+    vision_detected_ = false;
+    vision_ever_detected_ = false;
+    vision_stable_frames_ = 0;
+    vision_error_x_ = 0.0;
+    vision_error_y_ = 0.0;
+    publish_vision_servo(true, 0.0, 0.0);
+    RCLCPP_INFO(
+      get_logger(),
+      "Coarse fire pose reached; starting camera alignment (translation<=%.1f dm, yaw<=%.1f deg)",
+      vision_max_translation_dm_, vision_search_yaw_rad_ * 180.0 / M_PI);
+  }
+
+  void tick_visual_align(const Point & current, double yaw_map)
+  {
+    vision_translation_dm_ +=
+      std::hypot(current.x - vision_last_pose_.x, current.y - vision_last_pose_.y);
+    vision_last_pose_ = current;
+    if (vision_translation_dm_ > vision_max_translation_dm_) {
+      fail("vision_motion_limit");
+      return;
+    }
+
+    const auto current_time = now();
+    const double elapsed_s = (current_time - vision_started_at_).seconds();
+    if (elapsed_s >= vision_timeout_s_) {
+      fail(vision_ever_detected_ ? "vision_timeout" : "vision_target_lost");
+      return;
+    }
+    if (!vision_detection_seen_ ||
+      (current_time - last_vision_detection_at_).seconds() >
+      vision_data_timeout_s_)
+    {
+      if (elapsed_s >= vision_data_timeout_s_) {
+        fail("vision_stale");
+      } else {
+        publish_vision_servo(true, 0.0, 0.0);
+      }
+      return;
+    }
+
+    if (vision_stable_frames_ >= vision_stable_frames_required_) {
+      RCLCPP_INFO(
+        get_logger(), "Camera alignment stable for %lld frames",
+        static_cast<long long>(vision_stable_frames_));
+      begin_laser();
+      return;
+    }
+
+    const double yaw_from_entry =
+      normalize_angle(yaw_map - vision_entry_yaw_map_);
+    if (std::fabs(yaw_from_entry) >
+      vision_search_yaw_rad_ + 2.0 * M_PI / 180.0)
+    {
+      fail("vision_yaw_limit");
+      return;
+    }
+
+    if (!vision_detected_) {
+      if ((current_time - last_vision_target_at_).seconds() <
+        vision_lost_grace_s_)
+      {
+        publish_vision_servo(true, 0.0, 0.0);
+        return;
+      }
+      if (vision_search_direction_ > 0.0 &&
+        yaw_from_entry >= vision_search_yaw_rad_)
+      {
+        vision_search_direction_ = -1.0;
+      } else if (vision_search_direction_ < 0.0 &&
+        yaw_from_entry <= -vision_search_yaw_rad_)
+      {
+        vision_search_direction_ = 1.0;
+      }
+      publish_vision_servo(
+        true, 0.0, vision_search_direction_ * vision_search_w_rps_);
+      return;
+    }
+
+    double linear_x = 0.0;
+    double angular_z = 0.0;
+    if (std::fabs(vision_error_y_) > vision_error_deadband_y_) {
+      linear_x = std::clamp(
+        -vision_kp_v_mps_ * vision_error_y_,
+        -vision_v_max_mps_, vision_v_max_mps_);
+    }
+    if (std::fabs(vision_error_x_) > vision_error_deadband_x_) {
+      angular_z = std::clamp(
+        -vision_kp_w_rps_ * vision_error_x_,
+        -vision_w_max_rps_, vision_w_max_rps_);
+    }
+
+    if ((angular_z > 0.0 && yaw_from_entry >= vision_search_yaw_rad_) ||
+      (angular_z < 0.0 && yaw_from_entry <= -vision_search_yaw_rad_))
+    {
+      fail("vision_yaw_limit");
+      return;
+    }
+    if (linear_x != 0.0) {
+      const double yaw_arena = yaw_map - origin_yaw_rad_;
+      const double direction = linear_x > 0.0 ? 1.0 : -1.0;
+      const Point lookahead{
+        current.x + direction * vision_safety_lookahead_dm_ * std::cos(yaw_arena),
+        current.y + direction * vision_safety_lookahead_dm_ * std::sin(yaw_arena)};
+      if (blocked(lookahead.x, lookahead.y)) {
+        fail("vision_unsafe_motion");
+        return;
+      }
+    }
+    publish_vision_servo(true, linear_x, angular_z);
   }
 
   void tick()
@@ -480,12 +724,19 @@ private:
     double yaw_map = 0.0;
     const PoseResult pose_result = get_pose(current, yaw_map);
     if (pose_result != PoseResult::OK) {
+      if (state_ == State::VISUAL_ALIGN) {
+        publish_vision_servo(true, 0.0, 0.0);
+      }
       tolerate_pose_failure(pose_result, current, yaw_map);
       return;
     }
     accept_pose(current, yaw_map);
     if (state_ == State::WAIT_POSE) {
       start_mission(current);
+      return;
+    }
+    if (state_ == State::VISUAL_ALIGN) {
+      tick_visual_align(current, yaw_map);
       return;
     }
     if (state_ == State::LASER_ON) {
@@ -512,11 +763,7 @@ private:
     }
     if (waypoint_index_ >= path_.size()) {
       if (state_ == State::DRIVE_FIRE) {
-        laser_state_.clear();
-        publish_laser("ON");
-        laser_started_at_ = now();
-        state_ = State::LASER_ON;
-        report("extinguishing");
+        start_visual_align(current, yaw_map);
       } else {
         state_ = State::IDLE;
         report("done");
@@ -537,7 +784,7 @@ private:
       if (distance < arrival_tol_dm_ &&
         std::fabs(normalize_angle(aim_yaw_map - yaw_map)) <= aim_tol_rad_)
       {
-        ++waypoint_index_;
+        start_visual_align(current, yaw_map);
       }
       return;
     }
@@ -553,6 +800,7 @@ private:
   void fail(const std::string & reason)
   {
     // OFF is harmless in mock mode and is mandatory once a real driver is used.
+    publish_vision_servo(false, 0.0, 0.0);
     publish_laser("OFF");
     state_ = State::SAFE_STOP;
     if (have_last_valid_pose_) {
@@ -563,6 +811,7 @@ private:
 
   void reset()
   {
+    publish_vision_servo(false, 0.0, 0.0);
     publish_laser("OFF");
     if (have_last_valid_pose_) {
       publish_target(last_valid_pose_, last_valid_yaw_map_);
@@ -598,6 +847,20 @@ private:
   double pose_failure_timeout_s_{1.0};
   double tf_max_age_s_{0.5};
   double outside_arena_margin_dm_{3.0};
+  int64_t vision_stable_frames_required_{8};
+  double vision_error_deadband_x_{0.06};
+  double vision_error_deadband_y_{0.06};
+  double vision_kp_v_mps_{0.08};
+  double vision_kp_w_rps_{0.60};
+  double vision_v_max_mps_{0.04};
+  double vision_w_max_rps_{0.20};
+  double vision_search_w_rps_{0.12};
+  double vision_search_yaw_rad_{15.0 * M_PI / 180.0};
+  double vision_timeout_s_{12.0};
+  double vision_data_timeout_s_{0.5};
+  double vision_lost_grace_s_{0.3};
+  double vision_max_translation_dm_{2.0};
+  double vision_safety_lookahead_dm_{0.5};
   Point home_{};
   Point fire_point_{};
   size_t fire_district_{kInvalidDistrict};
@@ -615,17 +878,34 @@ private:
   bool have_last_valid_pose_{false};
   std::string last_tf_error_;
   double pose_failure_initial_elapsed_s_{0.0};
+  rclcpp::Time vision_started_at_;
+  rclcpp::Time last_vision_detection_at_;
+  rclcpp::Time last_vision_target_at_;
+  Point vision_last_pose_{};
+  double vision_entry_yaw_map_{0.0};
+  double vision_translation_dm_{0.0};
+  double vision_search_direction_{1.0};
+  bool vision_detection_seen_{false};
+  bool vision_detected_{false};
+  bool vision_ever_detected_{false};
+  int64_t vision_stable_frames_{0};
+  double vision_error_x_{0.0};
+  double vision_error_y_{0.0};
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr
     target_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr laser_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_publisher_;
+  rclcpp::Publisher<follower_pkg::msg::VisionServoCommand>::SharedPtr
+    vision_servo_publisher_;
   rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr
     fire_subscription_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
     laser_status_subscription_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr reset_subscription_;
+  rclcpp::Subscription<follower_pkg::msg::FireDetection>::SharedPtr
+    vision_detection_subscription_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 

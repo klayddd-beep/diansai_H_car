@@ -20,8 +20,10 @@
 //   释放话题(避免与 /car_movement 离散命令长期抢底盘);底盘侧另有 $SET,TIMEOUT 兜底。
 
 #include <cmath>
+#include <stdexcept>
 
 #include "rclcpp/rclcpp.hpp"
+#include "follower_pkg/msg/vision_servo_command.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "tf2/LinearMath/Matrix3x3.h"
@@ -59,6 +61,9 @@ public:
     declare_parameter<double>("target_timeout_s", 1.0);
     declare_parameter<double>("stop_burst_s", 1.0); // 超时后零速发送时长
     declare_parameter<double>("publish_rate_hz", 20.0);
+    declare_parameter<double>("vision_command_timeout_s", 0.3);
+    declare_parameter<double>("vision_v_max_mps", 0.05);
+    declare_parameter<double>("vision_w_max_rps", 0.25);
     // 控制点偏移(车体系,雷达→前驱动轮轴中点)。底盘 $VW 的 v/w 定义在前轴中点上,
     // 把控制点从雷达挪到该点 → 旋转中心与控制点重合,转弯/原地转时控制点不平移,
     // 走弧线精确、不抖。本车:轴在雷达前方 6.2cm、横向 0。
@@ -76,7 +81,18 @@ public:
     stop_burst_s_ = get_parameter("stop_burst_s").as_double();
     ctrl_offset_x_m_ = get_parameter("ctrl_offset_x_cm").as_double() / 100.0;
     ctrl_offset_y_m_ = get_parameter("ctrl_offset_y_cm").as_double() / 100.0;
+    vision_command_timeout_s_ =
+      get_parameter("vision_command_timeout_s").as_double();
+    vision_v_max_ = get_parameter("vision_v_max_mps").as_double();
+    vision_w_max_ = get_parameter("vision_w_max_rps").as_double();
     const double rate_hz = get_parameter("publish_rate_hz").as_double();
+    if (!std::isfinite(vision_command_timeout_s_) ||
+      vision_command_timeout_s_ <= 0.0 ||
+      !std::isfinite(vision_v_max_) || vision_v_max_ <= 0.0 ||
+      !std::isfinite(vision_w_max_) || vision_w_max_ <= 0.0)
+    {
+      throw std::invalid_argument("vision controller limits must be positive");
+    }
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -84,6 +100,12 @@ public:
     target_sub_ = create_subscription<std_msgs::msg::Float32MultiArray>(
       "/target_position", rclcpp::QoS(10),
       std::bind(&DiffDriveController::targetCallback, this, std::placeholders::_1));
+    vision_servo_sub_ =
+      create_subscription<follower_pkg::msg::VisionServoCommand>(
+      "/fire_vision/servo_command", rclcpp::QoS(10),
+      std::bind(
+        &DiffDriveController::visionServoCallback, this,
+        std::placeholders::_1));
 
     cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", rclcpp::QoS(10));
 
@@ -103,6 +125,12 @@ public:
 private:
   void targetCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg)
   {
+    if (vision_mode_latched_) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "ignoring navigation target while camera alignment owns the chassis");
+      return;
+    }
     if (msg->data.size() < 4) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 2000,
@@ -126,6 +154,38 @@ private:
     last_target_time_ = now();
     has_target_ = true;
     reverse_active_ = false;
+  }
+
+  void visionServoCallback(
+    const follower_pkg::msg::VisionServoCommand::SharedPtr msg)
+  {
+    if (!msg->active) {
+      if (vision_mode_latched_) {
+        RCLCPP_INFO(get_logger(), "camera alignment released chassis control");
+      }
+      vision_mode_latched_ = false;
+      visual_v_ = 0.0;
+      visual_w_ = 0.0;
+      publishCmd(0.0, 0.0);
+      return;
+    }
+    if (!std::isfinite(msg->linear_x_mps) ||
+      !std::isfinite(msg->angular_z_rps))
+    {
+      RCLCPP_WARN(get_logger(), "ignoring non-finite camera servo command");
+      return;
+    }
+    if (!vision_mode_latched_) {
+      RCLCPP_INFO(get_logger(), "camera alignment acquired chassis control");
+    }
+    vision_mode_latched_ = true;
+    // Never allow an old absolute/reverse command to resume after visual release.
+    has_target_ = false;
+    reverse_active_ = false;
+    reverse_started_ = false;
+    visual_v_ = clamp(msg->linear_x_mps, -vision_v_max_, vision_v_max_);
+    visual_w_ = clamp(msg->angular_z_rps, -vision_w_max_, vision_w_max_);
+    last_vision_command_time_ = now();
   }
 
   bool getCurrentPose(double & x, double & y, double & yaw)
@@ -162,6 +222,20 @@ private:
 
   void controlTimerCallback()
   {
+    if (vision_mode_latched_) {
+      const double age_s = (now() - last_vision_command_time_).seconds();
+      if (age_s > vision_command_timeout_s_) {
+        publishCmd(0.0, 0.0);
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "camera servo command stale %.2fs; holding visual lock at zero speed",
+          age_s);
+      } else {
+        publishCmd(visual_v_, visual_w_);
+      }
+      return;
+    }
+
     if (reverse_active_) {
       const double age_s = (now() - reverse_cmd_time_).seconds();
       if (age_s > target_timeout_s_) {
@@ -262,6 +336,8 @@ private:
   double align_gate_rad_, pos_tol_m_, yaw_tol_rad_;
   double target_timeout_s_, stop_burst_s_;
   double ctrl_offset_x_m_{0.0}, ctrl_offset_y_m_{0.0};
+  double vision_command_timeout_s_{0.3};
+  double vision_v_max_{0.05}, vision_w_max_{0.25};
 
   // 状态
   double target_x_m_{0.0}, target_y_m_{0.0}, target_yaw_rad_{0.0};
@@ -273,11 +349,16 @@ private:
   double reverse_distance_m_{0.0};
   double reverse_start_x_{0.0}, reverse_start_y_{0.0}, reverse_start_yaw_{0.0};
   rclcpp::Time reverse_cmd_time_;
+  bool vision_mode_latched_{false};
+  double visual_v_{0.0}, visual_w_{0.0};
+  rclcpp::Time last_vision_command_time_;
 
   // ROS 接口
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr target_sub_;
+  rclcpp::Subscription<follower_pkg::msg::VisionServoCommand>::SharedPtr
+    vision_servo_sub_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::TimerBase::SharedPtr control_timer_;
 };

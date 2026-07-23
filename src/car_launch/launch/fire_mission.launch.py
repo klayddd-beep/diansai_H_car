@@ -41,6 +41,7 @@ def generate_launch_description():
             Node(package="follower_pkg", executable="diff_drive_controller", parameters=[os.path.join(share, "config", "follower_params.yaml")], output="screen"),
             Node(package="follower_pkg", executable="fire_event_bridge", parameters=[params], output="screen"),
             Node(package="follower_pkg", executable="fire_link_bridge", parameters=[params], output="screen"),
+            Node(package="follower_pkg", executable="fire_vision_node.py", parameters=[params], output="screen"),
             Node(package="follower_pkg", executable="fire_mission_manager", parameters=[params], output="screen"),
             Node(package="follower_pkg", executable="laser_gpio_driver", parameters=[params], output="screen"),
             Node(package="follower_pkg", executable="fire_dashboard.py", parameters=[params], output="screen"),
