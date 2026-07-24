@@ -42,6 +42,10 @@ GREEN = (55, 210, 126)
 AMBER = (255, 190, 60)
 RED = (255, 82, 72)
 
+# Global typography multiplier.  Keep this in one place so every label,
+# metric, badge and button remains consistently legible on the car display.
+TYPOGRAPHY_SCALE = 1.15
+
 
 class FireDashboard(Node):
     def __init__(self):
@@ -223,7 +227,7 @@ class FireDashboard(Node):
             (path for path in candidates if os.path.exists(path)), None)
 
     def font(self, size):
-        size = max(14, int(size))
+        size = max(14, round(float(size) * TYPOGRAPHY_SCALE))
         if size not in self.fonts:
             if self.font_path:
                 self.fonts[size] = ImageFont.truetype(self.font_path, size)
@@ -347,7 +351,7 @@ class FireDashboard(Node):
                 (upper_left, lower_right), radius=max(3, width // 180),
                 fill=(72, 83, 87), outline=(114, 128, 132), width=2)
             label = f"街区 {index}"
-            label_size = max(12, int(height * 0.025))
+            label_size = max(16, int(height * 0.032))
             label_w = self.text_width(draw, label, label_size)
             self.text(draw, label,
                       ((upper_left[0] + lower_right[0] - label_w) / 2,
@@ -363,8 +367,8 @@ class FireDashboard(Node):
             outline=(73, 111, 122), width=2)
         self.text(
             draw, "起降区",
-            (takeoff_upper_left[0] + 5, takeoff_upper_left[1] + 3),
-            height * 0.025, TEXT_MUTED)
+            (takeoff_upper_left[0] + 7, takeoff_upper_left[1] + 4),
+            height * 0.032, TEXT_MUTED)
 
         parking_upper_left = self.field_to_screen(
             (self.parking_zone[0], self.parking_zone[3]), arena)
@@ -375,13 +379,14 @@ class FireDashboard(Node):
             outline=(188, 68, 61), width=2)
 
         home_px = self.field_to_screen(self.home, arena)
-        radius = max(7, width // 90)
+        radius = max(10, width // 75)
         draw.ellipse((home_px[0] - radius - 3, home_px[1] - radius - 3,
                       home_px[0] + radius + 3, home_px[1] + radius + 3),
                      outline=(117, 47, 44), width=2)
         draw.ellipse((home_px[0] - radius, home_px[1] - radius,
                       home_px[0] + radius, home_px[1] + radius), fill=RED)
-        self.text(draw, "车", (home_px[0] + 9, home_px[1] - 15), height * 0.03,
+        self.text(draw, "车", (home_px[0] + 12, home_px[1] - 18),
+                  height * 0.038,
                   (255, 139, 128))
 
         if len(self.track) >= 2:
@@ -390,7 +395,7 @@ class FireDashboard(Node):
                 fill=CYAN, width=max(2, width // 260), joint="curve")
         if self.telemetry:
             drone_px = self.field_to_screen(self.telemetry[:2], arena)
-            radius = max(8, width // 75)
+            radius = max(11, width // 65)
             draw.ellipse((drone_px[0] - radius - 5, drone_px[1] - radius - 5,
                           drone_px[0] + radius + 5, drone_px[1] + radius + 5),
                          outline=(128, 103, 33), width=2)
@@ -400,15 +405,19 @@ class FireDashboard(Node):
 
         if self.fire_point:
             fire_px = self.field_to_screen(self.fire_point, arena)
-            draw.polygon(self.star_points(fire_px, 15, 7), fill=RED)
+            marker_size = max(17, int(height * 0.03))
+            draw.polygon(
+                self.star_points(fire_px, marker_size, marker_size * 0.46),
+                fill=RED)
             fire_label = (
                 f"火源 ({self.fire_point[0]:.1f}, "
                 f"{self.fire_point[1]:.1f})")
-            fire_label_size = height * 0.027
+            fire_label_size = height * 0.034
             fire_label_w = self.text_width(
                 draw, fire_label, fire_label_size)
-            fire_label_x = min(
-                fire_px[0] + 17, right - fire_label_w - 6)
+            fire_label_x = fire_px[0] + marker_size + 8
+            if fire_label_x + fire_label_w > right - 6:
+                fire_label_x = fire_px[0] - marker_size - fire_label_w - 8
             fire_label_x = max(left + 6, fire_label_x)
             self.text(
                 draw, fire_label, (fire_label_x, fire_px[1] - 18),
@@ -420,12 +429,12 @@ class FireDashboard(Node):
     def draw_panel(self, draw, panel):
         left, top, width, height = panel
         self.rounded_card(draw, (left, top, left + width, top + height))
-        padding = max(16, int(width * 0.055))
+        padding = max(10, int(width * 0.024))
         x = left + padding
         inner_w = width - padding * 2
-        title_size = max(20, min(30, int(width * 0.068)))
-        label_size = max(13, int(title_size * 0.55))
-        value_size = max(18, int(title_size * 0.78))
+        title_size = max(30, min(52, int(width * 0.085)))
+        label_size = max(20, int(title_size * 0.58))
+        value_size = max(29, int(title_size * 0.86))
         y = top + padding
         self.text(draw, "飞行遥测", (x, y), title_size, TEXT)
 
@@ -440,25 +449,25 @@ class FireDashboard(Node):
         self.draw_badge(
             draw, link_text, left + width - padding, y,
             link_color, label_size)
-        y += title_size * 1.65
+        y += title_size * 1.68
 
-        card_gap = max(9, int(width * 0.025))
-        card_h = max(64, int(height * 0.13))
+        card_gap = max(7, int(width * 0.018))
+        card_h = max(86, int(height * 0.15))
         half_w = (inner_w - card_gap) / 2
         if self.telemetry:
             px, py, distance, altitude, phase_value, _ = self.telemetry
             phase = PHASES.get(int(phase_value), f"未知({int(phase_value)})")
             metrics = (
-                ("坐标 X / Y", f"{px:.1f} / {py:.1f}", "dm", CYAN),
-                ("飞行高度", f"{altitude:.1f}", "dm", AMBER),
-                ("累计里程", f"{distance:.1f}", "dm", TEXT),
+                ("坐标 X / Y  (dm)", f"{px:.1f} / {py:.1f}", "", CYAN),
+                ("飞行高度  (dm)", f"{altitude:.1f}", "", AMBER),
+                ("累计里程  (dm)", f"{distance:.1f}", "", TEXT),
                 ("任务阶段", phase, "", GREEN),
             )
         else:
             metrics = (
-                ("坐标 X / Y", "-- / --", "dm", TEXT_MUTED),
-                ("飞行高度", "--", "dm", TEXT_MUTED),
-                ("累计里程", "--", "dm", TEXT_MUTED),
+                ("坐标 X / Y  (dm)", "-- / --", "", TEXT_MUTED),
+                ("飞行高度  (dm)", "--", "", TEXT_MUTED),
+                ("累计里程  (dm)", "--", "", TEXT_MUTED),
                 ("任务阶段", "--", "", TEXT_MUTED),
             )
         for index, (label, value, unit, color) in enumerate(metrics):
@@ -468,42 +477,56 @@ class FireDashboard(Node):
             self.rounded_card(
                 draw,
                 (card_left, card_top, card_left + half_w, card_top + card_h),
-                radius=12, fill=SURFACE_ALT, outline=(43, 58, 68))
+                radius=14, fill=SURFACE_ALT, outline=(43, 58, 68), width=2)
             self.text(
-                draw, label, (card_left + 13, card_top + 10),
+                draw, label, (card_left + 12, card_top + 10),
                 label_size, TEXT_MUTED)
-            value_y = card_top + card_h - value_size - 15
+            value_y = card_top + card_h - value_size - 18
             self.text(
-                draw, value, (card_left + 13, value_y), value_size, color)
+                draw, value, (card_left + 12, value_y), value_size, color)
             if unit:
                 value_w = self.text_width(draw, value, value_size)
                 self.text(
                     draw, unit,
-                    (card_left + 18 + value_w,
+                    (card_left + 17 + value_w,
                      value_y + value_size * 0.25),
                     label_size, TEXT_MUTED)
-        y += card_h * 2 + card_gap * 2 + 4
+        y += card_h * 2 + card_gap * 2
+
+        button_h = max(76, int(height * 0.15))
+        button_top = top + height - padding - button_h
+        section_gap = card_gap
+        remaining_h = button_top - y - section_gap * 2
+        status_h = max(44, remaining_h * 0.64)
+        fire_h = max(40, remaining_h - status_h)
 
         status_label = CAR_STATUSES.get(self.car_status, self.car_status)
         status_color = RED if self.car_status.startswith("failed:") else GREEN
-        self.text(draw, "消防车任务", (x, y), label_size, TEXT_MUTED)
+        self.rounded_card(
+            draw, (x, y, x + inner_w, y + status_h), radius=14,
+            fill=SURFACE_ALT, outline=(43, 58, 68), width=2)
         self.text(
-            draw, status_label, (x, y + label_size * 1.45),
-            value_size, status_color)
-        y += label_size * 1.45 + value_size * 1.6
+            draw, "消防车任务", (x + 14, y + 10), label_size, TEXT_MUTED)
+        status_value_size = max(value_size, int(value_size * 1.04))
+        self.text(
+            draw, status_label,
+            (x + 14, y + status_h - status_value_size - 17),
+            status_value_size, status_color)
+        y += status_h + section_gap
 
-        draw.line((x, y, x + inner_w, y), fill=BORDER, width=1)
-        y += max(12, int(height * 0.025))
         fire = (
             f"火源  ({self.fire_point[0]:.1f}, "
             f"{self.fire_point[1]:.1f}) dm"
             if self.fire_point else "火源  --")
-        self.text(draw, fire, (x, y), label_size * 1.08,
+        self.rounded_card(
+            draw, (x, y, x + inner_w, y + fire_h), radius=14,
+            fill=SURFACE_ALT, outline=(43, 58, 68), width=2)
+        fire_size = label_size * 1.18
+        self.text(draw, fire, (x + 14, y + (fire_h - fire_size) * 0.4),
+                  fire_size,
                   (255, 137, 120) if self.fire_point else TEXT_MUTED)
 
-        button_h = max(48, int(height * 0.09))
-        button_top = top + height - padding - button_h
-        button_gap = max(9, int(width * 0.025))
+        button_gap = card_gap
         button_w = (inner_w - button_gap) / 2
         self.start_button_rect = (
             x, button_top, x + button_w, button_top + button_h)
@@ -517,7 +540,7 @@ class FireDashboard(Node):
             fill=(28, 112, 72) if showing_feedback else (21, 91, 107),
             outline=GREEN if showing_feedback else CYAN, width=2)
         prompt = "已发送" if showing_feedback else "启动无人机"
-        prompt_size = max(14, int(title_size * 0.56))
+        prompt_size = max(21, int(title_size * 0.72))
         prompt_w = self.text_width(draw, prompt, prompt_size)
         self.text(draw, prompt,
                   (x + (button_w - prompt_w) / 2,
@@ -581,7 +604,7 @@ class FireDashboard(Node):
                 self.trigger_reset()
 
     def draw_header(self, draw, margin, header_h):
-        icon_r = max(13, int(header_h * 0.27))
+        icon_r = max(17, int(header_h * 0.31))
         icon_x = margin + icon_r
         icon_y = margin + header_h / 2
         draw.ellipse((icon_x - icon_r, icon_y - icon_r,
@@ -590,16 +613,16 @@ class FireDashboard(Node):
             self.star_points(
                 (icon_x, icon_y), icon_r * 0.58, icon_r * 0.27),
             fill=(255, 235, 225))
-        title_size = max(22, int(header_h * 0.42))
+        title_size = max(25, int(header_h * 0.44))
         self.text(draw, "空地协同智能消防", (icon_x + icon_r + 12, margin + 1),
                   title_size, TEXT)
         self.text(
             draw, "CAR  ·  实时任务态势",
-            (icon_x + icon_r + 13, margin + title_size * 1.18),
-            max(12, int(title_size * 0.5)), TEXT_MUTED)
+            (icon_x + icon_r + 13, margin + title_size * 1.38),
+            max(14, int(title_size * 0.54)), TEXT_MUTED)
 
-        tab_h = max(36, int(header_h * 0.72))
-        tab_w = max(104, int(tab_h * 2.8))
+        tab_h = max(44, int(header_h * 0.82))
+        tab_w = max(130, int(tab_h * 2.9))
         tabs_left = round((self.width - tab_w * 2) / 2)
         tabs_top = round(margin + (header_h - tab_h) / 2)
         tabs_right = tabs_left + tab_w * 2
@@ -610,7 +633,7 @@ class FireDashboard(Node):
             tabs_left, tabs_top, tabs_left + tab_w, tabs_top + tab_h)
         self.camera_tab_rect = (
             tabs_left + tab_w, tabs_top, tabs_right, tabs_top + tab_h)
-        tab_size = max(13, int(tab_h * 0.38))
+        tab_size = max(16, int(tab_h * 0.4))
         for label, bounds, selected in (
                 ("任务态势", self.map_tab_rect, self.active_tab == "map"),
                 ("摄像头", self.camera_tab_rect,
@@ -626,7 +649,7 @@ class FireDashboard(Node):
                  bounds[1] + (tab_h - tab_size) * 0.36),
                 tab_size, TEXT if selected else TEXT_MUTED)
 
-        button_size = max(36, int(header_h * 0.72))
+        button_size = max(44, int(header_h * 0.82))
         button_top = round(margin + (header_h - button_size) / 2)
         button_right = self.width - margin
         button_left = button_right - button_size
@@ -648,7 +671,7 @@ class FireDashboard(Node):
             fill=TEXT, width=max(2, button_size // 14))
 
         hint = "ESC"
-        hint_size = max(12, int(title_size * 0.52))
+        hint_size = max(14, int(title_size * 0.55))
         hint_w = self.text_width(draw, hint, hint_size)
         self.text(
             draw, hint,
@@ -659,12 +682,16 @@ class FireDashboard(Node):
     def draw_camera_card(self, image, draw, card):
         left, top, width, height = card
         right, bottom = left + width, top + height
-        self.rounded_card(draw, (left, top, right, bottom))
-        padding = max(12, int(min(width, height) * 0.035))
-        title_size = max(17, min(26, int(min(width, height) * 0.055)))
-        self.text(
-            draw, "摄像头画面", (left + padding, top + padding),
-            title_size, TEXT)
+        padding = max(5, int(min(width, height) * 0.009))
+        title_size = max(22, min(32, int(min(width, height) * 0.05)))
+        viewport = (
+            round(left + padding), round(top + padding),
+            round(right - padding), round(bottom - padding))
+        viewport_w = max(1, viewport[2] - viewport[0])
+        viewport_h = max(1, viewport[3] - viewport[1])
+        draw.rounded_rectangle(
+            viewport, radius=max(10, padding * 2),
+            fill=(5, 9, 12), outline=(43, 58, 68), width=2)
 
         elapsed = (
             math.inf if self.last_camera_time is None
@@ -675,87 +702,106 @@ class FireDashboard(Node):
             status_text, status_color = "等待", AMBER
         else:
             status_text, status_color = "已断开", RED
-        status_size = max(12, int(title_size * 0.62))
-        self.draw_badge(
-            draw, status_text, right - padding, top + padding,
-            status_color, status_size)
-
-        viewport_top = top + padding + max(
-            title_size * 1.9, status_size * 2.0)
-        viewport = (
-            round(left + padding), round(viewport_top),
-            round(right - padding), round(bottom - padding))
-        viewport_w = max(1, viewport[2] - viewport[0])
-        viewport_h = max(1, viewport[3] - viewport[1])
-        draw.rounded_rectangle(
-            viewport, radius=max(8, padding // 2),
-            fill=(5, 9, 12), outline=(43, 58, 68), width=1)
-
         if self.camera_frame is None:
             prompt = "等待摄像头画面"
-            prompt_size = max(13, int(title_size * 0.72))
+            prompt_size = max(18, int(title_size * 0.78))
             prompt_w = self.text_width(draw, prompt, prompt_size)
             self.text(
                 draw, prompt,
                 (viewport[0] + (viewport_w - prompt_w) / 2,
                  viewport[1] + (viewport_h - prompt_size) / 2),
                 prompt_size, TEXT_MUTED)
-            return
+        else:
+            rgb_frame = cv2.cvtColor(self.camera_frame, cv2.COLOR_BGR2RGB)
+            preview = Image.fromarray(rgb_frame)
+            scale = min(
+                viewport_w / preview.width, viewport_h / preview.height)
+            preview_size = (
+                max(1, round(preview.width * scale)),
+                max(1, round(preview.height * scale)))
+            resampling = getattr(Image, "Resampling", Image)
+            preview = preview.resize(preview_size, resampling.LANCZOS)
+            preview_left = viewport[0] + (viewport_w - preview.width) // 2
+            preview_top = viewport[1] + (viewport_h - preview.height) // 2
+            image.paste(preview, (preview_left, preview_top))
 
-        rgb_frame = cv2.cvtColor(self.camera_frame, cv2.COLOR_BGR2RGB)
-        preview = Image.fromarray(rgb_frame)
-        scale = min(
-            viewport_w / preview.width, viewport_h / preview.height)
-        preview_size = (
-            max(1, round(preview.width * scale)),
-            max(1, round(preview.height * scale)))
-        resampling = getattr(Image, "Resampling", Image)
-        preview = preview.resize(preview_size, resampling.LANCZOS)
-        preview_left = viewport[0] + (viewport_w - preview.width) // 2
-        preview_top = viewport[1] + (viewport_h - preview.height) // 2
-        image.paste(preview, (preview_left, preview_top))
-        draw.rectangle(viewport, outline=(43, 58, 68), width=1)
+        overlay_h = max(48, int(title_size * 1.7))
+        overlay_right = min(
+            right - padding * 2,
+            left + padding * 2
+            + self.text_width(draw, "摄像头画面", title_size) + 36)
+        draw.rounded_rectangle(
+            (left + padding * 2, top + padding * 2,
+             overlay_right, top + padding * 2 + overlay_h),
+            radius=overlay_h // 2, fill=SURFACE, outline=BORDER, width=2)
+        self.text(
+            draw, "摄像头画面",
+            (left + padding * 2 + 18,
+             top + padding * 2 + (overlay_h - title_size) * 0.35),
+            title_size, TEXT)
+        status_size = max(15, int(title_size * 0.65))
+        self.draw_badge(
+            draw, status_text, right - padding * 2, top + padding * 2,
+            status_color, status_size)
+        draw.rounded_rectangle(
+            viewport, radius=max(10, padding * 2),
+            outline=(63, 83, 94), width=2)
 
     def draw_map_card(self, draw, card):
         left, top, width, height = card
-        self.rounded_card(draw, (left, top, left + width, top + height))
-        padding = max(14, int(min(width, height) * 0.028))
-        title_size = max(18, int(min(width, height) * 0.04))
-        self.text(
-            draw, "场地态势", (left + padding, top + padding),
-            title_size, TEXT)
+        padding = max(4, int(min(width, height) * 0.008))
+        title_size = max(23, int(min(width, height) * 0.044))
         subtitle = "原点左下  ·  单位 dm"
-        subtitle_size = max(12, int(title_size * 0.58))
-        subtitle_w = self.text_width(draw, subtitle, subtitle_size)
-        self.text(draw, subtitle, (left + width - padding - subtitle_w,
-                  top + padding + title_size * 0.3), subtitle_size, TEXT_MUTED)
-
-        legend_h = max(25, int(title_size * 1.15))
-        arena_top = top + padding + title_size * 1.65
-        arena_bottom = top + height - padding - legend_h
-        available_w = width - padding * 2
-        available_h = max(100, arena_bottom - arena_top)
-        arena_w = min(available_w, available_h * self.field_w / self.field_h)
-        arena_h = arena_w * self.field_h / self.field_w
-        arena_left = left + (width - arena_w) / 2
-        arena_top += (available_h - arena_h) / 2
+        subtitle_size = max(15, int(title_size * 0.63))
         arena = (
-            round(arena_left), round(arena_top),
-            round(arena_w), round(arena_h))
+            round(left + padding), round(top + padding),
+            round(width - padding * 2), round(height - padding * 2))
         self.draw_map(draw, arena)
 
-        legend_y = top + height - padding - subtitle_size
+        toolbar_h = max(50, int(title_size * 1.75))
+        toolbar_left = left + padding * 2
+        toolbar_top = top + padding * 2
+        toolbar_right = min(
+            left + width - padding * 2,
+            toolbar_left + self.text_width(draw, "场地态势", title_size)
+            + self.text_width(draw, subtitle, subtitle_size) + 68)
+        draw.rounded_rectangle(
+            (toolbar_left, toolbar_top, toolbar_right,
+             toolbar_top + toolbar_h),
+            radius=toolbar_h // 2, fill=SURFACE, outline=BORDER, width=2)
+        title_x = toolbar_left + 18
+        self.text(
+            draw, "场地态势",
+            (title_x, toolbar_top + (toolbar_h - title_size) * 0.34),
+            title_size, TEXT)
+        self.text(
+            draw, subtitle,
+            (title_x + self.text_width(draw, "场地态势", title_size)
+             + 18, toolbar_top + (toolbar_h - subtitle_size) * 0.4),
+            subtitle_size, TEXT_MUTED)
+
         legend = ((CYAN, "航迹"), (AMBER, "无人机"), (RED, "火源 / 车"))
-        cursor_x = left + padding
+        legend_width = sum(
+            self.text_width(draw, label, subtitle_size) + 42
+            for _, label in legend) + 12
+        legend_h = max(42, int(subtitle_size * 2.3))
+        legend_left = left + padding * 2
+        legend_top = top + height - padding * 2 - legend_h
+        draw.rounded_rectangle(
+            (legend_left, legend_top, legend_left + legend_width,
+             legend_top + legend_h),
+            radius=legend_h // 2, fill=SURFACE, outline=BORDER, width=2)
+        legend_y = legend_top + (legend_h - subtitle_size) * 0.37
+        cursor_x = legend_left + 16
         for color, label in legend:
-            dot_r = max(3, subtitle_size // 4)
+            dot_r = max(4, subtitle_size // 3)
             draw.ellipse((cursor_x, legend_y + 3, cursor_x + dot_r * 2,
                           legend_y + 3 + dot_r * 2), fill=color)
             cursor_x += dot_r * 2 + 6
             self.text(
                 draw, label, (cursor_x, legend_y),
                 subtitle_size, TEXT_MUTED)
-            cursor_x += self.text_width(draw, label, subtitle_size) + 20
+            cursor_x += self.text_width(draw, label, subtitle_size) + 18
 
     def render(self):
         # XFCE may apply the saved HDMI mode after desktop autostart has
@@ -777,15 +823,15 @@ class FireDashboard(Node):
                 pass
         image = Image.new("RGB", (self.width, self.height), BG)
         draw = ImageDraw.Draw(image)
-        margin = max(12, int(min(self.width, self.height) * 0.022))
-        gap = max(12, int(margin * 0.9))
-        header_h = max(48, int(self.height * 0.075))
+        margin = max(4, int(min(self.width, self.height) * 0.007))
+        gap = max(6, int(min(self.width, self.height) * 0.009))
+        header_h = max(58, int(self.height * 0.09))
         self.draw_header(draw, margin, header_h)
         content_top = margin + header_h + gap
         content_h = self.height - content_top - margin
-        panel_width = max(340, min(460, int(self.width * 0.345)))
+        panel_width = max(420, min(820, int(self.width * 0.42)))
         if self.width < 900:
-            panel_width = max(300, int(self.width * 0.39))
+            panel_width = max(320, int(self.width * 0.42))
         page_width = self.width - margin * 2 - gap - panel_width
         page_card = (margin, content_top, page_width, content_h)
         panel = (margin + page_width + gap, content_top, panel_width, content_h)
