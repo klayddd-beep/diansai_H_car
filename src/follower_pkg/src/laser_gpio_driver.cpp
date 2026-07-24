@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <stdexcept>
@@ -32,8 +33,8 @@ public:
     gpio_command_ = get_parameter("gpio_command").as_string();
     const bool startup_on = get_parameter("startup_on").as_bool();
 
-    if (max_on_s_ <= 0.0) {
-      throw std::invalid_argument("max_on_s must be greater than zero");
+    if (!std::isfinite(max_on_s_) || max_on_s_ <= 0.0) {
+      throw std::invalid_argument("max_on_s must be finite and greater than zero");
     }
     if (gpio_number_ < 0) {
       throw std::invalid_argument("gpio_number must not be negative");
@@ -51,13 +52,16 @@ public:
       [this](std_msgs::msg::String::SharedPtr message) {command(message->data);});
     timer_ = create_wall_timer(
       std::chrono::milliseconds(50), [this]() {
-        if (on_ && now() >= off_at_) {
+        if (on_ && std::chrono::steady_clock::now() >= off_at_) {
           set(false, "timeout_off");
         }
       });
 
     if (startup_on) {
-      off_at_ = now() + rclcpp::Duration::from_seconds(max_on_s_);
+      off_at_ =
+        std::chrono::steady_clock::now() +
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(max_on_s_));
       set(true, "on");
     }
   }
@@ -74,7 +78,16 @@ private:
   void command(const std::string & command)
   {
     if (command == "ON") {
-      off_at_ = now() + rclcpp::Duration::from_seconds(max_on_s_);
+      if (on_) {
+        // A retry means the acknowledgement was lost. Do not extend the
+        // hardware safety deadline for an already-active laser.
+        publish_status("on");
+        return;
+      }
+      off_at_ =
+        std::chrono::steady_clock::now() +
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(max_on_s_));
       set(true, "on");
     } else if (command == "OFF") {
       set(false, "off");
@@ -132,6 +145,21 @@ private:
       RCLCPP_ERROR(get_logger(), "cannot write GPIO value file: %s", gpio_value_path_.c_str());
       return false;
     }
+    value.close();
+
+    std::ifstream readback(gpio_value_path_);
+    char actual = 0;
+    if (!(readback >> actual) || (actual != '0' && actual != '1')) {
+      RCLCPP_ERROR(
+        get_logger(), "cannot read back GPIO value file: %s", gpio_value_path_.c_str());
+      return false;
+    }
+    if (actual - '0' != electrical_level) {
+      RCLCPP_ERROR(
+        get_logger(), "GPIO %d readback mismatch: requested %d, observed %c",
+        gpio_number_, electrical_level, actual);
+      return false;
+    }
     return true;
   }
 
@@ -166,7 +194,7 @@ private:
   int gpio_number_{40};
   std::string gpio_command_;
   std::string gpio_value_path_;
-  rclcpp::Time off_at_;
+  std::chrono::steady_clock::time_point off_at_{};
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_;
   rclcpp::TimerBase::SharedPtr timer_;

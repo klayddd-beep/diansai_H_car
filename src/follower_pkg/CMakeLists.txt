@@ -45,6 +45,8 @@ target_link_libraries(fire_mission_manager "${cpp_typesupport_target}")
 add_executable(laser_gpio_driver src/laser_gpio_driver.cpp)
 ament_target_dependencies(laser_gpio_driver rclcpp std_msgs)
 
+target_include_directories(fire_mission_manager PRIVATE include)
+
 install(TARGETS
   diff_drive_controller
   waypoint_test_publisher
@@ -53,6 +55,9 @@ install(TARGETS
   fire_mission_manager
   laser_gpio_driver
   DESTINATION lib/${PROJECT_NAME})
+
+install(DIRECTORY include/
+  DESTINATION include)
 
 install(PROGRAMS
   scripts/fire_dashboard.py
@@ -69,12 +74,18 @@ install(DIRECTORY launch config
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
+  find_package(ament_cmake_gtest REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
   ament_add_pytest_test(fire_vision_core_test
     test/test_fire_vision_core.py
     TIMEOUT 30)
+  ament_add_gtest(laser_handshake_test
+    test/test_laser_handshake.cpp)
+  if(TARGET laser_handshake_test)
+    target_include_directories(laser_handshake_test PRIVATE include)
+  endif()
 endif()
 
 ament_export_dependencies(rosidl_default_runtime)

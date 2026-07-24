@@ -43,7 +43,14 @@ def generate_launch_description():
             Node(package="follower_pkg", executable="fire_link_bridge", parameters=[params], output="screen"),
             Node(package="follower_pkg", executable="fire_vision_node.py", parameters=[params], output="screen"),
             Node(package="follower_pkg", executable="fire_mission_manager", parameters=[params], output="screen"),
-            Node(package="follower_pkg", executable="laser_gpio_driver", parameters=[params], output="screen"),
+            Node(
+                package="follower_pkg",
+                executable="laser_gpio_driver",
+                parameters=[params],
+                output="screen",
+                respawn=True,
+                respawn_delay=0.2,
+            ),
             Node(package="follower_pkg", executable="fire_dashboard.py", parameters=[params], output="screen"),
         ])
     ])

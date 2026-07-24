@@ -56,6 +56,11 @@ fire_mission_manager:
     # The car must face the fire within this tolerance before the laser starts.
     aim_tol_deg: 8.0
     laser_on_s: 2.1
+    # Require explicit driver acknowledgements before timing exposure, returning,
+    # or declaring the mission ready. Commands are retried while awaiting ACK.
+    laser_ack_timeout_s: 0.5
+    laser_startup_timeout_s: 3.0
+    laser_command_retry_s: 0.1
     grid_dm: 1.0
     safety_margin_dm: 1.5
     # Keep the car stopped during a transient pose failure; fail only after this

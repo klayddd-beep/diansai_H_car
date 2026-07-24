@@ -1,7 +1,8 @@
 // Fire mission state machine. Arena coordinates are dm; TF/control coordinates are m.
 #include <algorithm>
-#include <cstdint>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <queue>
 #include <stdexcept>
@@ -10,6 +11,7 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "follower_pkg/laser_handshake.hpp"
 #include "follower_pkg/msg/fire_detection.hpp"
 #include "follower_pkg/msg/vision_servo_command.hpp"
 #include "std_msgs/msg/empty.hpp"
@@ -53,6 +55,9 @@ public:
     declare_parameter<double>("district_match_tol_dm", 2.0);
     declare_parameter<double>("aim_tol_deg", 8.0);
     declare_parameter<double>("laser_on_s", 2.1);
+    declare_parameter<double>("laser_ack_timeout_s", 0.5);
+    declare_parameter<double>("laser_startup_timeout_s", 3.0);
+    declare_parameter<double>("laser_command_retry_s", 0.1);
     declare_parameter<double>("grid_dm", 1.0);
     declare_parameter<double>("safety_margin_dm", 1.5);
     declare_parameter<double>("pose_failure_timeout_s", 1.0);
@@ -89,6 +94,12 @@ public:
       get_parameter("district_match_tol_dm").as_double();
     aim_tol_rad_ = get_parameter("aim_tol_deg").as_double() * M_PI / 180.0;
     laser_on_s_ = get_parameter("laser_on_s").as_double();
+    laser_ack_timeout_s_ =
+      get_parameter("laser_ack_timeout_s").as_double();
+    laser_startup_timeout_s_ =
+      get_parameter("laser_startup_timeout_s").as_double();
+    laser_command_retry_s_ =
+      get_parameter("laser_command_retry_s").as_double();
     grid_dm_ = get_parameter("grid_dm").as_double();
     safety_margin_dm_ = get_parameter("safety_margin_dm").as_double();
     pose_failure_timeout_s_ =
@@ -145,7 +156,7 @@ public:
       create_subscription<std_msgs::msg::String>(
       "/laser_status", 10,
       [this](std_msgs::msg::String::SharedPtr message) {
-        laser_state_ = message->data;
+        on_laser_status(message->data);
       });
     reset_subscription_ = create_subscription<std_msgs::msg::Empty>(
       "/fire_mission_reset", 10,
@@ -158,13 +169,24 @@ public:
       });
     timer_ = create_wall_timer(
       std::chrono::milliseconds(100), [this]() {tick();});
-    report("ready");
+    begin_laser_command(false, State::STARTUP_WAIT_LASER_OFF);
   }
 
 private:
   enum class State
   {
-    IDLE, WAIT_POSE, DRIVE_FIRE, VISUAL_ALIGN, LASER_ON, DRIVE_HOME, SAFE_STOP
+    STARTUP_WAIT_LASER_OFF,
+    IDLE,
+    WAIT_POSE,
+    DRIVE_FIRE,
+    VISUAL_ALIGN,
+    LASER_WAIT_ON,
+    LASER_ON,
+    LASER_WAIT_OFF,
+    PLAN_HOME,
+    DRIVE_HOME,
+    RESET_WAIT_LASER_OFF,
+    SAFE_STOP
   };
   enum class PoseResult {OK, TF_LOST, OUTSIDE_ARENA};
 
@@ -182,6 +204,12 @@ private:
       !std::isfinite(district_match_tol_dm_) || district_match_tol_dm_ < 0.0 ||
       !std::isfinite(aim_tol_rad_) || aim_tol_rad_ <= 0.0 ||
       !std::isfinite(laser_on_s_) || laser_on_s_ <= 0.0 ||
+      !std::isfinite(laser_ack_timeout_s_) || laser_ack_timeout_s_ <= 0.0 ||
+      !std::isfinite(laser_startup_timeout_s_) ||
+      laser_startup_timeout_s_ <= 0.0 ||
+      !std::isfinite(laser_command_retry_s_) ||
+      laser_command_retry_s_ <= 0.0 ||
+      laser_command_retry_s_ >= laser_ack_timeout_s_ ||
       !std::isfinite(grid_dm_) || grid_dm_ <= 0.0 ||
       !std::isfinite(safety_margin_dm_) || safety_margin_dm_ < 0.0 ||
       !std::isfinite(pose_failure_timeout_s_) || pose_failure_timeout_s_ <= 0.0 ||
@@ -480,6 +508,12 @@ private:
       RCLCPP_WARN(get_logger(), "ignoring short /fire_event message");
       return;
     }
+    if (state_ == State::STARTUP_WAIT_LASER_OFF ||
+      state_ == State::RESET_WAIT_LASER_OFF)
+    {
+      report("failed:laser_not_ready");
+      return;
+    }
     if (state_ != State::IDLE) {
       report(current_status_);
       return;
@@ -588,14 +622,98 @@ private:
     laser_publisher_->publish(message);
   }
 
+  static double monotonic_seconds()
+  {
+    return std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+
+  void on_laser_status(const std::string & status)
+  {
+    if (status != "ready" && status != "on" && status != "off" &&
+      status != "timeout_off" && status != "error")
+    {
+      RCLCPP_WARN(get_logger(), "ignoring unknown laser status: '%s'", status.c_str());
+      return;
+    }
+    laser_handshake_.note_status(status, monotonic_seconds());
+  }
+
+  void begin_laser_command(bool on, State wait_state)
+  {
+    const double now_s = monotonic_seconds();
+    if (on) {
+      laser_handshake_.begin_on(now_s);
+      publish_laser("ON");
+    } else {
+      laser_handshake_.begin_off(now_s);
+      publish_laser("OFF");
+    }
+    state_ = wait_state;
+  }
+
+  bool tick_laser_handshake()
+  {
+    const bool startup_wait = state_ == State::STARTUP_WAIT_LASER_OFF;
+    const bool reset_wait = state_ == State::RESET_WAIT_LASER_OFF;
+    const bool wait_on = state_ == State::LASER_WAIT_ON;
+    const bool wait_off = state_ == State::LASER_WAIT_OFF;
+    const bool laser_on = state_ == State::LASER_ON;
+    if (!startup_wait && !reset_wait && !wait_on && !wait_off && !laser_on) {
+      return false;
+    }
+
+    const double now_s = monotonic_seconds();
+    const double timeout_s = startup_wait ?
+      laser_startup_timeout_s_ : laser_ack_timeout_s_;
+    const auto result = laser_handshake_.evaluate(now_s, timeout_s);
+    switch (result) {
+      case follower_pkg::LaserHandshakeResult::ON_CONFIRMED:
+        laser_started_at_s_ = laser_handshake_.status_at_s();
+        state_ = State::LASER_ON;
+        report("extinguishing");
+        RCLCPP_INFO(get_logger(), "Laser ON acknowledged; starting exposure timer");
+        return true;
+      case follower_pkg::LaserHandshakeResult::OFF_CONFIRMED:
+        if (startup_wait || reset_wait) {
+          state_ = State::IDLE;
+          report("ready");
+          RCLCPP_INFO(
+            get_logger(), "%s laser OFF acknowledged; mission is ready",
+            startup_wait ? "Startup" : "Reset");
+        } else {
+          state_ = State::PLAN_HOME;
+          RCLCPP_INFO(get_logger(), "Laser OFF acknowledged; return planning is now permitted");
+        }
+        return true;
+      case follower_pkg::LaserHandshakeResult::DRIVER_ERROR:
+        fail("laser_gpio_error");
+        return true;
+      case follower_pkg::LaserHandshakeResult::SAFETY_TIMEOUT:
+        fail("laser_timeout");
+        return true;
+      case follower_pkg::LaserHandshakeResult::UNEXPECTED_OFF:
+        fail("laser_unexpected_off");
+        return true;
+      case follower_pkg::LaserHandshakeResult::ACK_TIMEOUT:
+        fail(wait_on ? "laser_on_ack_timeout" : "laser_off_ack_timeout");
+        return true;
+      case follower_pkg::LaserHandshakeResult::NONE:
+        break;
+    }
+
+    if (laser_handshake_.should_retry(now_s, laser_command_retry_s_)) {
+      publish_laser(laser_handshake_.waiting_for_on() ? "ON" : "OFF");
+    }
+    // Waiting for an acknowledgement owns the chassis and needs no TF.
+    return !laser_on;
+  }
+
   void begin_laser()
   {
     publish_vision_servo(false, 0.0, 0.0);
-    laser_state_.clear();
-    publish_laser("ON");
-    laser_started_at_ = now();
-    state_ = State::LASER_ON;
-    report("extinguishing");
+    begin_laser_command(true, State::LASER_WAIT_ON);
+    RCLCPP_INFO(get_logger(), "Laser ON requested; waiting for driver acknowledgement");
   }
 
   void start_visual_align(const Point & current, double yaw_map)
@@ -725,6 +843,18 @@ private:
     if (state_ == State::IDLE || state_ == State::SAFE_STOP) {
       return;
     }
+    if (tick_laser_handshake()) {
+      return;
+    }
+    if (state_ == State::LASER_ON) {
+      // Exposure timing must never depend on TF availability. The chassis is
+      // already held, and an unavailable pose must not delay the OFF command.
+      if (monotonic_seconds() - laser_started_at_s_ >= laser_on_s_) {
+        begin_laser_command(false, State::LASER_WAIT_OFF);
+        RCLCPP_INFO(get_logger(), "Laser OFF requested; holding until acknowledged");
+      }
+      return;
+    }
 
     Point current{};
     double yaw_map = 0.0;
@@ -745,26 +875,15 @@ private:
       tick_visual_align(current, yaw_map);
       return;
     }
-    if (state_ == State::LASER_ON) {
-      if (laser_state_ == "error") {
-        fail("laser_gpio_error");
+    if (state_ == State::PLAN_HOME) {
+      path_ = plan(clamp_to_arena(current), home_);
+      if (path_.empty()) {
+        fail("home_unreachable");
         return;
       }
-      if (laser_state_ == "timeout_off") {
-        fail("laser_timeout");
-        return;
-      }
-      if ((now() - laser_started_at_).seconds() >= laser_on_s_) {
-        publish_laser("OFF");
-        path_ = plan(clamp_to_arena(current), home_);
-        if (path_.empty()) {
-          fail("home_unreachable");
-          return;
-        }
-        waypoint_index_ = 0;
-        state_ = State::DRIVE_HOME;
-        report("returning");
-      }
+      waypoint_index_ = 0;
+      state_ = State::DRIVE_HOME;
+      report("returning");
       return;
     }
     if (waypoint_index_ >= path_.size()) {
@@ -818,18 +937,16 @@ private:
   void reset()
   {
     publish_vision_servo(false, 0.0, 0.0);
-    publish_laser("OFF");
     if (have_last_valid_pose_) {
       publish_target(last_valid_pose_, last_valid_yaw_map_);
     }
     path_.clear();
     waypoint_index_ = 0;
-    laser_state_.clear();
     pose_failure_active_ = false;
     last_tf_error_.clear();
-    state_ = State::IDLE;
-    report("ready");
-    RCLCPP_INFO(get_logger(), "Mission reset to IDLE via /fire_mission_reset");
+    begin_laser_command(false, State::RESET_WAIT_LASER_OFF);
+    RCLCPP_INFO(
+      get_logger(), "Mission reset requested; waiting for laser OFF acknowledgement");
   }
 
   void report(const std::string & status)
@@ -840,7 +957,7 @@ private:
     status_publisher_->publish(message);
   }
 
-  State state_{State::IDLE};
+  State state_{State::STARTUP_WAIT_LASER_OFF};
   static constexpr size_t kInvalidDistrict = std::numeric_limits<size_t>::max();
   double origin_x_m_{-0.25};
   double origin_y_m_{1.35};
@@ -849,6 +966,9 @@ private:
   double district_match_tol_dm_{2.0};
   double aim_tol_rad_{8.0 * M_PI / 180.0};
   double laser_on_s_{2.1};
+  double laser_ack_timeout_s_{0.5};
+  double laser_startup_timeout_s_{3.0};
+  double laser_command_retry_s_{0.1};
   double grid_dm_{1.0};
   double safety_margin_dm_{1.5};
   double pose_failure_timeout_s_{1.0};
@@ -875,9 +995,9 @@ private:
   std::vector<double> district_stop_points_;
   std::vector<Point> path_;
   size_t waypoint_index_{0};
-  std::string laser_state_;
   std::string current_status_{"ready"};
-  rclcpp::Time laser_started_at_;
+  follower_pkg::LaserHandshake laser_handshake_;
+  double laser_started_at_s_{0.0};
   bool pose_failure_active_{false};
   rclcpp::Time pose_failure_started_at_;
   Point last_valid_pose_{};
